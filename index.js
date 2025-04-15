@@ -19,7 +19,7 @@ const JWT_SECRET = process.env.ENCRPT_KEY;
 const GETCORS = process.env.CORS;
 export let token = null;
 const authenticatedSockets = new Set();
-app.use('/api/admin', verifyAdmin, router_admin);
+app.use('/api/admin', router_admin);
 app.use('/api/artemis', router_artemis)
 
 // Configuración de CORS
