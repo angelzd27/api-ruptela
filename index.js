@@ -6,16 +6,21 @@ import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
 import { parseRuptelaPacketWithExtensions } from './controller/ruptela.js';
 import { decrypt, encrypt } from './utils/encrypt.js';
+import { verifyAdmin } from './utils/verifyAdmin.js';
+import { router_admin } from './routes/admin.js';
+import { router_artemis } from './routes/artemis.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = 5001;
-const TCP_PORT = 6001;
+const PORT = 5000;
+const TCP_PORT = 6000;
 const JWT_SECRET = process.env.ENCRPT_KEY;
 const GETCORS = process.env.CORS;
 export let token = null;
 const authenticatedSockets = new Set();
+app.use('/api/admin', verifyAdmin, router_admin);
+app.use('/api/artemis', router_artemis)
 
 // Configuración de CORS
 const corsOptions = {
@@ -181,7 +186,6 @@ function processAndEmitGpsData(decodedData) {
 
             // Emitir solo a sockets autenticados
             io.to([...authenticatedSockets]).emit('gps-data', dataToEmit);
-            console.log(`[Todos velocidad 0] Emitiendo solo el más reciente para IMEI: ${cacheKey}`, dataToEmit);
         } else {
             newRecordsToEmit.forEach(record => {
                 const dataToEmit = {
@@ -198,33 +202,24 @@ function processAndEmitGpsData(decodedData) {
 
                 // Emitir solo a sockets autenticados
                 io.to([...authenticatedSockets]).emit('gps-data', dataToEmit);
-                console.log(`Dato GPS emitido para IMEI: ${cacheKey}`, dataToEmit);
             });
         }
 
         gpsDataCache.set(cacheKey, dataToStore);
-    } else {
-        console.log(`Datos duplicados recibidos para IMEI: ${cacheKey}, no se actualiza`);
     }
 }
 
 // Manejo de conexión de clientes al socket intermedio
 io.on('connection', (socket) => {
-    console.log('Nuevo cliente conectado:', socket.id);
-
-    // Por defecto, no está autenticado
     socket.authenticated = false;
 
     socket.on('authenticate', ({ token }) => {
         const decoded = decrypt(token);
-        console.log('Token recibido:', token);
-        console.log('Token decodificado:', decoded);
         if (decoded === JWT_SECRET) {
             try {
                 socket.authenticated = true;
                 authenticatedSockets.add(socket.id);
                 socket.emit('authentication-success', { message: 'Autenticación exitosa' });
-                console.log(`Cliente ${socket.id} autenticado correctamente`);
             } catch (error) {
                 console.error('Error de autenticación:', error.message);
                 socket.emit('authentication-error', { message: 'Token inválido' });
@@ -234,7 +229,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        console.log('Cliente desconectado:', socket.id);
         authenticatedSockets.delete(socket.id);
     });
 });
@@ -246,8 +240,6 @@ httpServer.listen(PORT, async () => {
 
 // Configuración del servidor TCP
 const tcpServer = net.createServer((socket) => {
-    console.log('GPS connected via TCP');
-
     socket.on('data', (data) => {
         try {
             const hexData = data.toString('hex');
@@ -259,7 +251,7 @@ const tcpServer = net.createServer((socket) => {
     });
 
     socket.on('end', () => {
-        console.log('GPS disconnected');
+        // console.log('GPS disconnected');
     });
 
     socket.on('error', (error) => {
