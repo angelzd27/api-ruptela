@@ -6,7 +6,6 @@ import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
 import { parseRuptelaPacketWithExtensions } from './controller/ruptela.js';
 import { decrypt, encrypt } from './utils/encrypt.js';
-import { verifyAdmin } from './utils/verifyAdmin.js';
 import { router_admin } from './routes/admin.js';
 import { router_artemis } from './routes/artemis.js';
 
@@ -15,7 +14,6 @@ dotenv.config();
 const app = express();
 const PORT = 5000;
 const TCP_PORT = 6000;
-const JWT_SECRET = process.env.ENCRPT_KEY;
 const GETCORS = process.env.CORS;
 export let token = null;
 const authenticatedSockets = new Set();
@@ -212,6 +210,7 @@ function processAndEmitGpsData(decodedData) {
 // Manejo de conexión de clientes al socket intermedio
 io.on('connection', (socket) => {
     socket.authenticated = false;
+    const JWT_SECRET = process.env.ENCRPT_KEY;
 
     socket.on('authenticate', ({ token }) => {
         const decoded = decrypt(token);
