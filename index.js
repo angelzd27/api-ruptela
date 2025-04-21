@@ -20,13 +20,26 @@ const authenticatedSockets = new Set();
 app.use('/api/admin', router_admin);
 app.use('/api/artemis', router_artemis)
 
-// Configuración de CORS
+// Lista de orígenes permitidos (puedes agregar más)
+const allowedOrigins = [
+    'https://api-covia.okip.com.mx', // producción
+    'http://localhost:5000',  // otro backend local
+    undefined                 // <- importante para conexiones desde Node.js
+];
+
+// Middleware para Express
 const corsOptions = {
-    origin: GETCORS,
+    origin: function (origin, callback) {
+        if (allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            console.warn(`❌ Bloqueado por CORS (Express): ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true,
 };
-
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -38,12 +51,22 @@ const httpServer = http.createServer(app);
 // Configuración de Socket.IO en el mismo servidor HTTP
 export const io = new SocketIOServer(httpServer, {
     cors: {
-        origin: GETCORS,
+        origin: function (origin, callback) {
+            if (allowedOrigins.includes(origin)) {
+                callback(null, true);
+            } else {
+                console.warn(`❌ Bloqueado por CORS (Socket.IO): ${origin}`);
+                callback(new Error('Not allowed by Socket.IO CORS'));
+            }
+        },
+        methods: ['GET', 'POST'],
+        credentials: true,
     },
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
 });
+
 
 // Almacén para los últimos datos por IMEI
 const gpsDataCache = new Map();
