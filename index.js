@@ -2,10 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import net from 'net';
 import http from 'http';
-import { Server as SocketIOServer } from 'socket.io';
+import { WebSocketServer } from 'ws';
 import dotenv from 'dotenv';
 import { parseRuptelaPacketWithExtensions } from './controller/ruptela.js';
-import { decrypt, encrypt } from './utils/encrypt.js';
+import { decrypt } from './utils/encrypt.js';
 import { router_admin } from './routes/admin.js';
 import { router_artemis } from './routes/artemis.js';
 
@@ -15,63 +15,34 @@ const app = express();
 const PORT = 5000;
 const TCP_PORT = 6000;
 const GETCORS = process.env.CORS;
-export let token = null;
-const authenticatedSockets = new Set();
+const JWT_SECRET = process.env.ENCRPT_KEY;
+
 app.use('/api/admin', router_admin);
-app.use('/api/artemis', router_artemis)
+app.use('/api/artemis', router_artemis);
 
-// Lista de orígenes permitidos (puedes agregar más)
-const allowedOrigins = [
-    'https://api-covia.okip.com.mx', // producción
-    'http://localhost:5000',  // otro backend local
-    undefined                 // <- importante para conexiones desde Node.js
-];
-
-// Middleware para Express
+// Configuración de CORS
 const corsOptions = {
-    origin: function (origin, callback) {
-        if (allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            console.warn(`❌ Bloqueado por CORS (Express): ${origin}`);
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true,
+  origin: GETCORS,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true,
 };
+
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.text({ type: 'text/plain' }));
 
-// Crear servidor HTTP unificado
+// Crear servidor HTTP
 const httpServer = http.createServer(app);
 
-// Configuración de Socket.IO en el mismo servidor HTTP
-export const io = new SocketIOServer(httpServer, {
-    cors: {
-        origin: function (origin, callback) {
-            if (allowedOrigins.includes(origin)) {
-                callback(null, true);
-            } else {
-                console.warn(`❌ Bloqueado por CORS (Socket.IO): ${origin}`);
-                callback(new Error('Not allowed by Socket.IO CORS'));
-            }
-        },
-        methods: ['GET', 'POST'],
-        credentials: true,
-    },
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelay: 1000,
-});
+// Crear WebSocket Server
+const wss = new WebSocketServer({ server: httpServer });
 
+const clients = new Map(); // Map<ws, { authenticated: boolean }>
 
 // Almacén para los últimos datos por IMEI
 const gpsDataCache = new Map();
 
-// Función mejorada para limpiar y filtrar datos GPS
 function cleanAndFilterGpsData(decodedData) {
     if (!decodedData?.records?.length) return decodedData;
 
@@ -137,159 +108,159 @@ function cleanAndFilterGpsData(decodedData) {
 }
 
 function processAndEmitGpsData(decodedData) {
-    if (!decodedData?.imei || !decodedData?.records?.length) return;
+  if (!decodedData?.imei || !decodedData?.records?.length) return;
 
-    const cleanedData = cleanAndFilterGpsData(decodedData);
-    if (cleanedData.records.length === 0) return;
+  const cleanedData = cleanAndFilterGpsData(decodedData);
+  if (cleanedData.records.length === 0) return;
 
-    cleanedData.records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  cleanedData.records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
-    const cacheKey = cleanedData.imei;
-    const cachedData = gpsDataCache.get(cacheKey);
+  const cacheKey = cleanedData.imei;
+  const cachedData = gpsDataCache.get(cacheKey);
 
-    const getRecordKey = (record) => {
-        return `${record.timestamp}_${record.latitude.toFixed(6)}_${record.longitude.toFixed(6)}`;
+  const getRecordKey = (record) => {
+    return `${record.timestamp}_${record.latitude.toFixed(6)}_${record.longitude.toFixed(6)}`;
+  };
+
+  let hasNewData = false;
+  const newRecordsToEmit = [];
+
+  for (const record of cleanedData.records) {
+    const recordKey = getRecordKey(record);
+
+    if (!cachedData?.recordsMap || !cachedData.recordsMap[recordKey]) {
+      hasNewData = true;
+      newRecordsToEmit.push(record);
+    }
+  }
+
+  if (hasNewData) {
+    const allRecords = [...newRecordsToEmit, ...(cachedData?.records || [])];
+    const recordsMap = {};
+
+    const uniqueRecords = [];
+    for (const record of allRecords) {
+      const recordKey = getRecordKey(record);
+      if (!recordsMap[recordKey]) {
+        recordsMap[recordKey] = true;
+        uniqueRecords.push(record);
+      }
+    }
+
+    const limitedRecords = uniqueRecords.slice(0, 100);
+
+    const dataToStore = {
+      imei: cleanedData.imei,
+      records: limitedRecords,
+      recordsMap: limitedRecords.reduce((map, record) => {
+        map[getRecordKey(record)] = true;
+        return map;
+      }, {}),
+      lastUpdated: new Date(),
     };
 
-    let hasNewData = false;
-    const newRecordsToEmit = [];
-
-    for (const record of cleanedData.records) {
-        const recordKey = getRecordKey(record);
-
-        if (!cachedData?.recordsMap || !cachedData.recordsMap[recordKey]) {
-            hasNewData = true;
-            newRecordsToEmit.push(record);
+    const emitToAuthenticated = (data) => {
+      for (const [client, info] of clients.entries()) {
+        if (client.readyState === 1 && info.authenticated) {
+          client.send(JSON.stringify({ type: 'gps-data', data }));
         }
-    }
+      }
+    };
 
-    if (hasNewData) {
-        const allRecords = [...newRecordsToEmit, ...(cachedData?.records || [])];
-        const recordsMap = {};
-
-        const uniqueRecords = [];
-        for (const record of allRecords) {
-            const recordKey = getRecordKey(record);
-            if (!recordsMap[recordKey]) {
-                recordsMap[recordKey] = true;
-                uniqueRecords.push(record);
-            }
-        }
-
-        const limitedRecords = uniqueRecords.slice(0, 100);
-
-        const dataToStore = {
-            imei: cleanedData.imei,
-            records: limitedRecords,
-            recordsMap: limitedRecords.reduce((map, record) => {
-                map[getRecordKey(record)] = true;
-                return map;
-            }, {}),
-            lastUpdated: new Date()
+    const allZeroSpeed = newRecordsToEmit.every((record) => record.speed === 0);
+    if (allZeroSpeed) {
+      const mostRecentRecord = newRecordsToEmit[newRecordsToEmit.length - 1];
+      const dataToEmit = {
+        imei: cleanedData.imei,
+        position: {
+          lat: mostRecentRecord.latitude,
+          lng: mostRecentRecord.longitude,
+        },
+        timestamp: mostRecentRecord.timestamp,
+        speed: mostRecentRecord.speed,
+        altitude: mostRecentRecord.altitude,
+        additionalData: mostRecentRecord.ioElements,
+      };
+      emitToAuthenticated(dataToEmit);
+    } else {
+      newRecordsToEmit.forEach((record) => {
+        const dataToEmit = {
+          imei: cleanedData.imei,
+          position: {
+            lat: record.latitude,
+            lng: record.longitude,
+          },
+          timestamp: record.timestamp,
+          speed: record.speed,
+          altitude: record.altitude,
+          additionalData: record.ioElements,
         };
-
-        const allZeroSpeed = newRecordsToEmit.every(record => record.speed === 0);
-
-        if (allZeroSpeed) {
-            const mostRecentRecord = newRecordsToEmit[newRecordsToEmit.length - 1];
-
-            const dataToEmit = {
-                imei: cleanedData.imei,
-                position: {
-                    lat: mostRecentRecord.latitude,
-                    lng: mostRecentRecord.longitude
-                },
-                timestamp: mostRecentRecord.timestamp,
-                speed: mostRecentRecord.speed,
-                altitude: mostRecentRecord.altitude,
-                additionalData: mostRecentRecord.ioElements
-            };
-
-            // Emitir solo a sockets autenticados
-            io.to([...authenticatedSockets]).emit('gps-data', dataToEmit);
-        } else {
-            newRecordsToEmit.forEach(record => {
-                const dataToEmit = {
-                    imei: cleanedData.imei,
-                    position: {
-                        lat: record.latitude,
-                        lng: record.longitude
-                    },
-                    timestamp: record.timestamp,
-                    speed: record.speed,
-                    altitude: record.altitude,
-                    additionalData: record.ioElements
-                };
-
-                // Emitir solo a sockets autenticados
-                io.to([...authenticatedSockets]).emit('gps-data', dataToEmit);
-            });
-        }
-
-        gpsDataCache.set(cacheKey, dataToStore);
+        emitToAuthenticated(dataToEmit);
+      });
     }
+
+    gpsDataCache.set(cacheKey, dataToStore);
+  }
 }
 
-// Manejo de conexión de clientes al socket intermedio
-io.on('connection', (socket) => {
-    socket.authenticated = false;
-    const JWT_SECRET = process.env.ENCRPT_KEY;
+// WebSocket connection logic
+wss.on('connection', (ws) => {
+  clients.set(ws, { authenticated: false });
 
-    socket.on('authenticate', ({ token }) => {
+  ws.on('message', (message) => {
+    try {
+      const { type, token } = JSON.parse(message);
+
+      if (type === 'authenticate') {
         const decoded = decrypt(token);
         if (decoded === JWT_SECRET) {
-            try {
-                socket.authenticated = true;
-                authenticatedSockets.add(socket.id);
-                socket.emit('authentication-success', { message: 'Autenticación exitosa' });
-            } catch (error) {
-                console.error('Error de autenticación:', error.message);
-                socket.emit('authentication-error', { message: 'Token inválido' });
-                socket.disconnect(true);
-            }
+          clients.set(ws, { authenticated: true });
+          ws.send(JSON.stringify({ type: 'authentication-success', message: 'Autenticación exitosa' }));
+        } else {
+          ws.send(JSON.stringify({ type: 'authentication-error', message: 'Token inválido' }));
+          ws.close();
         }
-    });
+      }
+    } catch (error) {
+      console.error('Mensaje malformado o error:', error.message);
+    }
+  });
 
-    socket.on('disconnect', () => {
-        authenticatedSockets.delete(socket.id);
-    });
+  ws.on('close', () => {
+    clients.delete(ws);
+  });
 });
 
-// Inicializar servidor HTTP
-httpServer.listen(PORT, async () => {
-    console.log(`Servidor HTTP y Socket.IO escuchando en el puerto ${PORT}`);
+// Iniciar servidor HTTP
+httpServer.listen(PORT, () => {
+  console.log(`Servidor HTTP y WebSocket escuchando en el puerto ${PORT}`);
 });
 
-// Configuración del servidor TCP
+// Servidor TCP
 const tcpServer = net.createServer((socket) => {
-    socket.on('data', (data) => {
-        try {
-            const hexData = data.toString('hex');
-            const decodedData = parseRuptelaPacketWithExtensions(hexData);
-            processAndEmitGpsData(decodedData);
-        } catch (error) {
-            console.error('Error procesando datos GPS:', error);
-        }
-    });
+  socket.on('data', (data) => {
+    try {
+      const hexData = data.toString('hex');
+      const decodedData = parseRuptelaPacketWithExtensions(hexData);
+      processAndEmitGpsData(decodedData);
+    } catch (error) {
+      console.error('Error procesando datos GPS:', error);
+    }
+  });
 
-    socket.on('end', () => {
-        // console.log('GPS disconnected');
-    });
-
-    socket.on('error', (error) => {
-        console.error('TCP socket error:', error.message);
-    });
+  socket.on('error', (err) => {
+    console.error('TCP socket error:', err.message);
+  });
 });
 
 tcpServer.listen(TCP_PORT, () => {
-    console.log(`Servidor TCP escuchando en el puerto ${TCP_PORT}`);
+  console.log(`Servidor TCP escuchando en el puerto ${TCP_PORT}`);
 });
 
 // Manejo global de errores
 process.on('uncaughtException', (err) => {
-    console.error('Excepción no capturada:', err.message);
+  console.error('Excepción no capturada:', err.message);
 });
-
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Promesa rechazada sin manejar:', promise, 'Razón:', reason);
+  console.error('Promesa rechazada sin manejar:', promise, 'Razón:', reason);
 });
