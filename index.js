@@ -15,7 +15,6 @@ const app = express();
 const PORT = 5000;
 const TCP_PORT = 6000;
 const GETCORS = process.env.CORS;
-const JWT_SECRET = process.env.ENCRPT_KEY;
 
 app.use('/api/admin', router_admin);
 app.use('/api/artemis', router_artemis);
@@ -213,6 +212,8 @@ wss.on('connection', (ws) => {
 
       if (type === 'authenticate') {
         const decoded = decrypt(token);
+        const JWT_SECRET = process.env.ENCRPT_KEY;
+
         if (decoded === JWT_SECRET) {
           clients.set(ws, { authenticated: true });
           ws.send(JSON.stringify({ type: 'authentication-success', message: 'Autenticación exitosa' }));
