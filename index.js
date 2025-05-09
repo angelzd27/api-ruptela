@@ -16,6 +16,13 @@ const PORT = 5000;
 const TCP_PORT = 6000;
 const GETCORS = process.env.CORS;
 
+// Configuración de CORS
+const corsOptions = {
+    origin: GETCORS,
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true,
+}
+
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -30,13 +37,6 @@ app.post('/eventRcv', (req, res) => {
 
   res.status(200).send('OK');
 });
-
-// Configuración de CORS
-const corsOptions = {
-    origin: GETCORS,
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true,
-};
 
 // Crear servidor HTTP
 const httpServer = http.createServer(app);
