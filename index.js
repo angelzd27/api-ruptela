@@ -34,7 +34,7 @@ app.use('/api/artemis', router_artemis);
 // Ruta para recibir los eventos
 app.post('/eventRcv', (req, res) => {
   try {
-    const personId = req.body.params.events[0].data.alarmResult;
+    const personId = req.body.params.events[0].data.alarmResult.faces.identify.candidate;
     console.log('personId recibido:', personId);
     res.status(200).send('OK');
   } catch (error) {
