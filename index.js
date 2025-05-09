@@ -250,8 +250,13 @@ httpServer.listen(PORT, () => {
     console.log(`Servidor HTTP y WebSocket escuchando en el puerto ${PORT}`);
 });
 
-// Servidor TCP
-const tcpServer = net.createServer((socket) => {
+// Servidor TCP optimizado y robusto
+const tcpServer = net.createServer({ keepAlive: true, allowHalfOpen: false }, (socket) => {
+    console.log('Cliente TCP conectado:', socket.remoteAddress, socket.remotePort);
+
+    // Habilita KeepAlive cada 60 segundos para mantener activa la conexión
+    socket.setKeepAlive(true, 60000);
+
     socket.on('data', (data) => {
         try {
             const hexData = data.toString('hex');
@@ -262,8 +267,19 @@ const tcpServer = net.createServer((socket) => {
         }
     });
 
+    // Maneja errores específicos en sockets
     socket.on('error', (err) => {
         console.error('TCP socket error:', err.message);
+        socket.destroy();  // libera el socket ante un error
+    });
+
+    // Maneja correctamente el evento de cierre de conexión
+    socket.on('close', (hadError) => {
+        if (hadError) {
+            console.warn(`Cliente TCP desconectado inesperadamente: ${socket.remoteAddress}:${socket.remotePort}`);
+        } else {
+            console.log(`Cliente TCP desconectado normalmente: ${socket.remoteAddress}:${socket.remotePort}`);
+        }
     });
 });
 
