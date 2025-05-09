@@ -16,6 +16,11 @@ const PORT = 5000;
 const TCP_PORT = 6000;
 const GETCORS = process.env.CORS;
 
+app.use(cors(corsOptions));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.text({ type: 'text/plain' }));
+
 app.use('/api/admin', router_admin);
 app.use('/api/artemis', router_artemis);
 
@@ -32,11 +37,6 @@ const corsOptions = {
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true,
 };
-
-app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.text({ type: 'text/plain' }));
 
 // Crear servidor HTTP
 const httpServer = http.createServer(app);
@@ -252,8 +252,6 @@ httpServer.listen(PORT, () => {
 
 // Servidor TCP optimizado y robusto
 const tcpServer = net.createServer({ keepAlive: true, allowHalfOpen: false }, (socket) => {
-    console.log('Cliente TCP conectado:', socket.remoteAddress, socket.remotePort);
-
     // Habilita KeepAlive cada 60 segundos para mantener activa la conexión
     socket.setKeepAlive(true, 60000);
 
@@ -276,10 +274,8 @@ const tcpServer = net.createServer({ keepAlive: true, allowHalfOpen: false }, (s
     // Maneja correctamente el evento de cierre de conexión
     socket.on('close', (hadError) => {
         if (hadError) {
-            console.warn(`Cliente TCP desconectado inesperadamente: ${socket.remoteAddress}:${socket.remotePort}`);
-        } else {
-            console.log(`Cliente TCP desconectado normalmente: ${socket.remoteAddress}:${socket.remotePort}`);
-        }
+            //console.warn(`Cliente TCP desconectado inesperadamente: ${socket.remoteAddress}:${socket.remotePort}`);
+        } 
     });
 });
 
