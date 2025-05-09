@@ -19,6 +19,13 @@ const GETCORS = process.env.CORS;
 app.use('/api/admin', router_admin);
 app.use('/api/artemis', router_artemis);
 
+// Ruta para recibir los eventos
+app.post('/eventRcv', (req, res) => {
+  console.log('Evento recibido:', req.body);
+
+  res.status(200).send('OK');
+});
+
 // Configuración de CORS
 const corsOptions = {
     origin: GETCORS,
