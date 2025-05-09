@@ -33,9 +33,14 @@ app.use('/api/artemis', router_artemis);
 
 // Ruta para recibir los eventos
 app.post('/eventRcv', (req, res) => {
-  console.log('Evento recibido:', req.body);
-
-  res.status(200).send('OK');
+  try {
+    const personId = req.body?.params?.events?.[0]?.data?.personId;
+    console.log('personId recibido:', personId);
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Error al procesar evento:', error.message);
+    res.status(500).send('Error interno');
+  }
 });
 
 // Crear servidor HTTP
