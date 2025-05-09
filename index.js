@@ -34,11 +34,26 @@ app.use('/api/artemis', router_artemis);
 // Ruta para recibir los eventos
 app.post('/eventRcv', (req, res) => {
   try {
-    const personId = req.body.params.events[0].data.alarmResult.faces.identify.candidate;
-    console.log('personId recibido:', personId);
+    const event = req.body?.params?.events?.[0];
+
+    if (!event) {
+      console.warn('No se encontró el evento en el cuerpo');
+      return res.status(400).send('Evento inválido');
+    }
+
+    // Emitir a los clientes WebSocket autenticados
+    for (const [client, info] of clients.entries()) {
+      if (client.readyState === 1 && info.authenticated) {
+        client.send(JSON.stringify({
+          type: 'alert-data',
+          data: event
+        }));
+      }
+    }
+
     res.status(200).send('OK');
   } catch (error) {
-    console.error('Error al procesar evento:', error.message);
+    console.error('Error al procesar evento HikCentral:', error.message);
     res.status(500).send('Error interno');
   }
 });
