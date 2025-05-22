@@ -41,6 +41,8 @@ app.post('/eventRcv', (req, res) => {
       return res.status(400).send('Evento inválido');
     }
 
+    console.log("Event", event)
+
     // Emitir a los clientes WebSocket autenticados
     for (const [client, info] of clients.entries()) {
       if (client.readyState === 1 && info.authenticated) {
