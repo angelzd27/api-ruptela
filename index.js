@@ -330,7 +330,7 @@ const tcpServer = net.createServer({
         
         switch (err.code) {
             case 'ETIMEDOUT':
-                console.warn(`Timeout de lectura para cliente ${clientInfo}`);
+                // console.warn(`Timeout de lectura para cliente ${clientInfo}`);
                 break;
             case 'ECONNRESET':
                 console.warn(`Conexión reiniciada por el cliente ${clientInfo}`);
@@ -352,7 +352,7 @@ const tcpServer = net.createServer({
     socket.on('close', (hadError) => {
         const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
         if (hadError) {
-            console.warn(`Cliente TCP desconectado con error: ${clientInfo}`);
+            //console.warn(`Cliente TCP desconectado con error: ${clientInfo}`);
         }
     });
 
