@@ -31,6 +31,17 @@ app.use(express.text({ type: 'text/plain' }));
 app.use('/api/admin', router_admin);
 app.use('/api/artemis', router_artemis);
 
+// Crear servidor HTTP
+const httpServer = http.createServer(app);
+
+// Crear WebSocket Server
+const wss = new WebSocketServer({ server: httpServer });
+
+const clients = new Map(); // Map<ws, { authenticated: boolean }>
+
+// Almacén para los últimos datos por IMEI
+const gpsDataCache = new Map();
+
 // Ruta para recibir los eventos
 app.post('/eventRcv', (req, res) => {
   try {
@@ -59,17 +70,6 @@ app.post('/eventRcv', (req, res) => {
     res.status(500).send('Error interno');
   }
 });
-
-// Crear servidor HTTP
-const httpServer = http.createServer(app);
-
-// Crear WebSocket Server
-const wss = new WebSocketServer({ server: httpServer });
-
-const clients = new Map(); // Map<ws, { authenticated: boolean }>
-
-// Almacén para los últimos datos por IMEI
-const gpsDataCache = new Map();
 
 function cleanAndFilterGpsData(decodedData) {
     if (!decodedData?.records?.length) return decodedData;
@@ -272,43 +272,149 @@ httpServer.listen(PORT, () => {
     console.log(`Servidor HTTP y WebSocket escuchando en el puerto ${PORT}`);
 });
 
-// Servidor TCP optimizado y robusto
-const tcpServer = net.createServer({ keepAlive: true, allowHalfOpen: false }, (socket) => {
-    // Habilita KeepAlive cada 60 segundos para mantener activa la conexión
-    socket.setKeepAlive(true, 60000);
-
+// Servidor TCP optimizado y robusto con mejor manejo de timeouts
+const tcpServer = net.createServer({ 
+    keepAlive: true, 
+    allowHalfOpen: false 
+}, (socket) => {
+    // Configuración de timeouts más robusta
+    socket.setTimeout(300000); // 5 minutos de timeout
+    socket.setKeepAlive(true, 30000); // KeepAlive cada 30 segundos
+    socket.setNoDelay(true); // Desactiva el algoritmo de Nagle para mejor rendimiento
+    
+    // Buffer para manejar datos fragmentados
+    let dataBuffer = Buffer.alloc(0);
+    
     socket.on('data', (data) => {
         try {
-            const hexData = data.toString('hex');
-            const decodedData = parseRuptelaPacketWithExtensions(hexData);
-            processAndEmitGpsData(decodedData);
+            // Concatenar datos al buffer
+            dataBuffer = Buffer.concat([dataBuffer, data]);
+            
+            // Procesar paquetes completos
+            while (dataBuffer.length > 0) {
+                const hexData = dataBuffer.toString('hex');
+                
+                // Verificar si tenemos un paquete completo
+                // Esto depende del protocolo Ruptela, ajusta según sea necesario
+                if (hexData.length >= 8) { // Mínimo para header
+                    try {
+                        const decodedData = parseRuptelaPacketWithExtensions(hexData);
+                        if (decodedData) {
+                            processAndEmitGpsData(decodedData);
+                            dataBuffer = Buffer.alloc(0); // Limpiar buffer después del procesamiento exitoso
+                            break;
+                        }
+                    } catch (parseError) {
+                        console.warn('Error parseando paquete, esperando más datos:', parseError.message);
+                        break; // Esperar más datos
+                    }
+                } else {
+                    break; // Esperar más datos
+                }
+            }
         } catch (error) {
-            console.error('Error procesando datos GPS:', error);
+            console.error('Error procesando datos GPS:', error.message);
+            dataBuffer = Buffer.alloc(0); // Limpiar buffer en caso de error
         }
     });
 
-    // Maneja errores específicos en sockets
-    socket.on('error', (err) => {
-        console.error('TCP socket error:', err.message);
-        socket.destroy();  // libera el socket ante un error
+    // Manejo de timeout
+    socket.on('timeout', () => {
+        console.warn(`Timeout en conexión TCP: ${socket.remoteAddress}:${socket.remotePort}`);
+        socket.end(); // Cierra la conexión de manera elegante
     });
 
-    // Maneja correctamente el evento de cierre de conexión
-    socket.on('close', (hadError) => {
-        if (hadError) {
-            //console.warn(`Cliente TCP desconectado inesperadamente: ${socket.remoteAddress}:${socket.remotePort}`);
-        } 
+    // Manejo de errores más específico
+    socket.on('error', (err) => {
+        const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
+        
+        switch (err.code) {
+            case 'ETIMEDOUT':
+                console.warn(`Timeout de lectura para cliente ${clientInfo}`);
+                break;
+            case 'ECONNRESET':
+                console.warn(`Conexión reiniciada por el cliente ${clientInfo}`);
+                break;
+            case 'EPIPE':
+                console.warn(`Pipe roto para cliente ${clientInfo}`);
+                break;
+            default:
+                console.error(`Error TCP socket (${err.code}):`, err.message, `Cliente: ${clientInfo}`);
+        }
+        
+        // Limpiar el socket
+        if (!socket.destroyed) {
+            socket.destroy();
+        }
     });
+
+    // Manejo de cierre de conexión
+    socket.on('close', (hadError) => {
+        const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
+        if (hadError) {
+            console.warn(`Cliente TCP desconectado con error: ${clientInfo}`);
+        }
+    });
+
+    socket.on('end', () => {
+        //console.log(`Cliente TCP terminó la conexión: ${socket.remoteAddress}:${socket.remotePort}`);
+    });
+});
+
+// Configuración del servidor TCP
+tcpServer.maxConnections = 100; // Limitar conexiones concurrentes
+
+tcpServer.on('error', (err) => {
+    console.error('Error en servidor TCP:', err.message);
+    if (err.code === 'EADDRINUSE') {
+        console.error(`Puerto ${TCP_PORT} ya está en uso`);
+        process.exit(1);
+    }
 });
 
 tcpServer.listen(TCP_PORT, () => {
     console.log(`Servidor TCP escuchando en el puerto ${TCP_PORT}`);
 });
 
-// Manejo global de errores
+// Función para limpiar conexiones inactivas periódicamente
+setInterval(() => {
+    const connections = tcpServer.connections || 0;
+    if (connections > 0) {
+        console.log(`Conexiones TCP activas: ${connections}`);
+    }
+}, 60000); // Cada minuto
+
+// Manejo más robusto de errores globales
 process.on('uncaughtException', (err) => {
     console.error('Excepción no capturada:', err.message);
+    console.error('Stack:', err.stack);
+    // No hacer process.exit() aquí para mantener el servidor funcionando
 });
+
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Promesa rechazada sin manejar:', promise, 'Razón:', reason);
+    console.error('Promesa rechazada sin manejar en:', promise);
+    console.error('Razón:', reason);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('Recibida señal SIGTERM, cerrando servidor...');
+    tcpServer.close(() => {
+        console.log('Servidor TCP cerrado');
+        httpServer.close(() => {
+            console.log('Servidor HTTP cerrado');
+            process.exit(0);
+        });
+    });
+});
+
+process.on('SIGINT', () => {
+    console.log('Recibida señal SIGINT, cerrando servidor...');
+    tcpServer.close(() => {
+        console.log('Servidor TCP cerrado');
+        httpServer.close(() => {
+            console.log('Servidor HTTP cerrado');
+            process.exit(0);
+        });
+    });
 });
