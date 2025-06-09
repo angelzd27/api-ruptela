@@ -14,6 +14,7 @@ dotenv.config();
 const app = express();
 const PORT = 5000;
 const TCP_PORT = 6000;
+const TCP_PORT_2 = 6001; // Nuevo puerto TCP
 const GETCORS = process.env.CORS;
 
 // Configuración de CORS
@@ -44,31 +45,31 @@ const gpsDataCache = new Map();
 
 // Ruta para recibir los eventos
 app.post('/eventRcv', (req, res) => {
-  try {
-    const event = req.body?.params?.events?.[0];
+    try {
+        const event = req.body?.params?.events?.[0];
 
-    if (!event) {
-      console.warn('No se encontró el evento en el cuerpo');
-      return res.status(400).send('Evento inválido');
+        if (!event) {
+            console.warn('No se encontró el evento en el cuerpo');
+            return res.status(400).send('Evento inválido');
+        }
+
+        console.log("Event", event)
+
+        // Emitir a los clientes WebSocket autenticados
+        for (const [client, info] of clients.entries()) {
+            if (client.readyState === 1 && info.authenticated) {
+                client.send(JSON.stringify({
+                    type: 'alert-data',
+                    data: event
+                }));
+            }
+        }
+
+        res.status(200).send('OK');
+    } catch (error) {
+        console.error('Error al procesar evento HikCentral:', error.message);
+        res.status(500).send('Error interno');
     }
-
-    console.log("Event", event)
-
-    // Emitir a los clientes WebSocket autenticados
-    for (const [client, info] of clients.entries()) {
-      if (client.readyState === 1 && info.authenticated) {
-        client.send(JSON.stringify({
-          type: 'alert-data',
-          data: event
-        }));
-      }
-    }
-
-    res.status(200).send('OK');
-  } catch (error) {
-    console.error('Error al procesar evento HikCentral:', error.message);
-    res.status(500).send('Error interno');
-  }
 });
 
 function cleanAndFilterGpsData(decodedData) {
@@ -135,11 +136,30 @@ function cleanAndFilterGpsData(decodedData) {
     };
 }
 
-function processAndEmitGpsData(decodedData) {
+function processAndEmitGpsData(decodedData, port = null) {
     if (!decodedData?.imei || !decodedData?.records?.length) return;
 
     const cleanedData = cleanAndFilterGpsData(decodedData);
     if (cleanedData.records.length === 0) return;
+
+    // Solo imprimir datos del puerto 6001
+    if (port === TCP_PORT_2) {
+        console.log(`[PUERTO 6001] Datos recibidos:`, {
+            imei: cleanedData.imei,
+            numberOfRecords: cleanedData.numberOfRecords,
+            records: cleanedData.records.map(record => ({
+                timestamp: record.timestamp,
+                latitude: record.latitude,
+                longitude: record.longitude,
+                speed: record.speed,
+                altitude: record.altitude,
+                angle: record.angle,
+                satellites: record.satellites,
+                hdop: record.hdop,
+                ioElements: record.ioElements
+            }))
+        });
+    }
 
     cleanedData.records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
@@ -190,7 +210,13 @@ function processAndEmitGpsData(decodedData) {
         const emitToAuthenticated = (data) => {
             for (const [client, info] of clients.entries()) {
                 if (client.readyState === 1 && info.authenticated) {
-                    client.send(JSON.stringify({ type: 'gps-data', data }));
+                    client.send(JSON.stringify({
+                        type: 'gps-data',
+                        data: {
+                            ...data,
+                            source_port: port // Agregar información del puerto fuente
+                        }
+                    }));
                 }
             }
         };
@@ -225,8 +251,8 @@ function processAndEmitGpsData(decodedData) {
                     angle: record.angle ?? null,
                     satellites: record.satellites ?? null,
                     hdop: record.hdop ?? null,
-                    deviceno: "", // puedes llenar esto dinámicamente si lo tienes
-                    carlicense: "", // igual que arriba
+                    deviceno: "",
+                    carlicense: "",
                     additionalData: record.ioElements,
                 };
                 emitToAuthenticated(dataToEmit);
@@ -272,115 +298,129 @@ httpServer.listen(PORT, () => {
     console.log(`Servidor HTTP y WebSocket escuchando en el puerto ${PORT}`);
 });
 
-// Servidor TCP optimizado y robusto con mejor manejo de timeouts
-const tcpServer = net.createServer({ 
-    keepAlive: true, 
-    allowHalfOpen: false 
-}, (socket) => {
-    // Configuración de timeouts más robusta
-    socket.setTimeout(300000); // 5 minutos de timeout
-    socket.setKeepAlive(true, 30000); // KeepAlive cada 30 segundos
-    socket.setNoDelay(true); // Desactiva el algoritmo de Nagle para mejor rendimiento
-    
-    // Buffer para manejar datos fragmentados
-    let dataBuffer = Buffer.alloc(0);
-    
-    socket.on('data', (data) => {
-        try {
-            // Concatenar datos al buffer
-            dataBuffer = Buffer.concat([dataBuffer, data]);
-            
-            // Procesar paquetes completos
-            while (dataBuffer.length > 0) {
-                const hexData = dataBuffer.toString('hex');
-                
-                // Verificar si tenemos un paquete completo
-                // Esto depende del protocolo Ruptela, ajusta según sea necesario
-                if (hexData.length >= 8) { // Mínimo para header
-                    try {
-                        const decodedData = parseRuptelaPacketWithExtensions(hexData);
-                        if (decodedData) {
-                            processAndEmitGpsData(decodedData);
-                            dataBuffer = Buffer.alloc(0); // Limpiar buffer después del procesamiento exitoso
-                            break;
+// Función para crear un servidor TCP (reutilizable)
+function createTcpServer(port, serverName) {
+    const tcpServer = net.createServer({
+        keepAlive: true,
+        allowHalfOpen: false
+    }, (socket) => {
+        // Configuración de timeouts más robusta
+        socket.setTimeout(300000); // 5 minutos de timeout
+        socket.setKeepAlive(true, 30000); // KeepAlive cada 30 segundos
+        socket.setNoDelay(true); // Desactiva el algoritmo de Nagle para mejor rendimiento
+
+        // Buffer para manejar datos fragmentados
+        let dataBuffer = Buffer.alloc(0);
+
+        socket.on('data', (data) => {
+            if (port === TCP_PORT_2) {
+                console.log(data)
+            }
+            try {
+                // Concatenar datos al buffer
+                dataBuffer = Buffer.concat([dataBuffer, data]);
+
+                // Procesar paquetes completos
+                while (dataBuffer.length > 0) {
+                    const hexData = dataBuffer.toString('hex');
+
+                    // Verificar si tenemos un paquete completo
+                    // Esto depende del protocolo Ruptela, ajusta según sea necesario
+                    if (hexData.length >= 8) { // Mínimo para header
+                        try {
+                            const decodedData = parseRuptelaPacketWithExtensions(hexData);
+                            if (decodedData) {
+                                processAndEmitGpsData(decodedData, port);
+                                dataBuffer = Buffer.alloc(0); // Limpiar buffer después del procesamiento exitoso
+                                break;
+                            }
+                        } catch (parseError) {
+                            console.warn(`[${serverName}] Error parseando paquete, esperando más datos:`, parseError.message);
+                            break; // Esperar más datos
                         }
-                    } catch (parseError) {
-                        console.warn('Error parseando paquete, esperando más datos:', parseError.message);
+                    } else {
                         break; // Esperar más datos
                     }
-                } else {
-                    break; // Esperar más datos
                 }
+            } catch (error) {
+                console.error(`[${serverName}] Error procesando datos GPS:`, error.message);
+                dataBuffer = Buffer.alloc(0); // Limpiar buffer en caso de error
             }
-        } catch (error) {
-            console.error('Error procesando datos GPS:', error.message);
-            dataBuffer = Buffer.alloc(0); // Limpiar buffer en caso de error
+        });
+
+        // Manejo de timeout
+        socket.on('timeout', () => {
+            console.warn(`[${serverName}] Timeout en conexión TCP: ${socket.remoteAddress}:${socket.remotePort}`);
+            socket.end(); // Cierra la conexión de manera elegante
+        });
+
+        // Manejo de errores más específico
+        socket.on('error', (err) => {
+            const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
+
+            switch (err.code) {
+                case 'ETIMEDOUT':
+                    // console.warn(`[${serverName}] Timeout de lectura para cliente ${clientInfo}`);
+                    break;
+                case 'ECONNRESET':
+                    console.warn(`[${serverName}] Conexión reiniciada por el cliente ${clientInfo}`);
+                    break;
+                case 'EPIPE':
+                    console.warn(`[${serverName}] Pipe roto para cliente ${clientInfo}`);
+                    break;
+                default:
+                    console.error(`[${serverName}] Error TCP socket (${err.code}):`, err.message, `Cliente: ${clientInfo}`);
+            }
+
+            // Limpiar el socket
+            if (!socket.destroyed) {
+                socket.destroy();
+            }
+        });
+
+        // Manejo de cierre de conexión
+        socket.on('close', (hadError) => {
+            const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
+            if (hadError) {
+                //console.warn(`[${serverName}] Cliente TCP desconectado con error: ${clientInfo}`);
+            }
+        });
+
+        socket.on('end', () => {
+            //console.log(`[${serverName}] Cliente TCP terminó la conexión: ${socket.remoteAddress}:${socket.remotePort}`);
+        });
+    });
+
+    // Configuración del servidor TCP
+    tcpServer.maxConnections = 100; // Limitar conexiones concurrentes
+
+    tcpServer.on('error', (err) => {
+        console.error(`[${serverName}] Error en servidor TCP:`, err.message);
+        if (err.code === 'EADDRINUSE') {
+            console.error(`[${serverName}] Puerto ${port} ya está en uso`);
+            process.exit(1);
         }
     });
 
-    // Manejo de timeout
-    socket.on('timeout', () => {
-        console.warn(`Timeout en conexión TCP: ${socket.remoteAddress}:${socket.remotePort}`);
-        socket.end(); // Cierra la conexión de manera elegante
+    tcpServer.listen(port, () => {
+        console.log(`[${serverName}] Servidor TCP escuchando en el puerto ${port}`);
     });
 
-    // Manejo de errores más específico
-    socket.on('error', (err) => {
-        const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
-        
-        switch (err.code) {
-            case 'ETIMEDOUT':
-                // console.warn(`Timeout de lectura para cliente ${clientInfo}`);
-                break;
-            case 'ECONNRESET':
-                console.warn(`Conexión reiniciada por el cliente ${clientInfo}`);
-                break;
-            case 'EPIPE':
-                console.warn(`Pipe roto para cliente ${clientInfo}`);
-                break;
-            default:
-                console.error(`Error TCP socket (${err.code}):`, err.message, `Cliente: ${clientInfo}`);
-        }
-        
-        // Limpiar el socket
-        if (!socket.destroyed) {
-            socket.destroy();
-        }
-    });
+    return tcpServer;
+}
 
-    // Manejo de cierre de conexión
-    socket.on('close', (hadError) => {
-        const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
-        if (hadError) {
-            //console.warn(`Cliente TCP desconectado con error: ${clientInfo}`);
-        }
-    });
-
-    socket.on('end', () => {
-        //console.log(`Cliente TCP terminó la conexión: ${socket.remoteAddress}:${socket.remotePort}`);
-    });
-});
-
-// Configuración del servidor TCP
-tcpServer.maxConnections = 100; // Limitar conexiones concurrentes
-
-tcpServer.on('error', (err) => {
-    console.error('Error en servidor TCP:', err.message);
-    if (err.code === 'EADDRINUSE') {
-        console.error(`Puerto ${TCP_PORT} ya está en uso`);
-        process.exit(1);
-    }
-});
-
-tcpServer.listen(TCP_PORT, () => {
-    console.log(`Servidor TCP escuchando en el puerto ${TCP_PORT}`);
-});
+// Crear ambos servidores TCP
+const tcpServer1 = createTcpServer(TCP_PORT, 'TCP-6000');
+const tcpServer2 = createTcpServer(TCP_PORT_2, 'TCP-6001');
 
 // Función para limpiar conexiones inactivas periódicamente
 setInterval(() => {
-    const connections = tcpServer.connections || 0;
-    if (connections > 0) {
-        console.log(`Conexiones TCP activas: ${connections}`);
+    const connections1 = tcpServer1.connections || 0;
+    const connections2 = tcpServer2.connections || 0;
+    const totalConnections = connections1 + connections2;
+
+    if (totalConnections > 0) {
+        console.log(`Conexiones TCP activas - Puerto 6000: ${connections1}, Puerto 6001: ${connections2}, Total: ${totalConnections}`);
     }
 }, 60000); // Cada minuto
 
@@ -398,23 +438,29 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-    console.log('Recibida señal SIGTERM, cerrando servidor...');
-    tcpServer.close(() => {
-        console.log('Servidor TCP cerrado');
-        httpServer.close(() => {
-            console.log('Servidor HTTP cerrado');
-            process.exit(0);
+    console.log('Recibida señal SIGTERM, cerrando servidores...');
+    tcpServer1.close(() => {
+        console.log('Servidor TCP 6000 cerrado');
+        tcpServer2.close(() => {
+            console.log('Servidor TCP 6001 cerrado');
+            httpServer.close(() => {
+                console.log('Servidor HTTP cerrado');
+                process.exit(0);
+            });
         });
     });
 });
 
 process.on('SIGINT', () => {
-    console.log('Recibida señal SIGINT, cerrando servidor...');
-    tcpServer.close(() => {
-        console.log('Servidor TCP cerrado');
-        httpServer.close(() => {
-            console.log('Servidor HTTP cerrado');
-            process.exit(0);
+    console.log('Recibida señal SIGINT, cerrando servidores...');
+    tcpServer1.close(() => {
+        console.log('Servidor TCP 6000 cerrado');
+        tcpServer2.close(() => {
+            console.log('Servidor TCP 6001 cerrado');
+            httpServer.close(() => {
+                console.log('Servidor HTTP cerrado');
+                process.exit(0);
+            });
         });
     });
 });
