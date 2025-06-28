@@ -8,6 +8,7 @@ import { parseRuptelaPacketWithExtensions } from './controller/ruptela.js';
 import { decrypt } from './utils/encrypt.js';
 import { router_admin } from './routes/admin.js';
 import { router_artemis } from './routes/artemis.js';
+import { handlePacketResponse } from './utils/ruptela-ack.js'; // Importar funciones ACK
 
 dotenv.config();
 
@@ -136,130 +137,186 @@ function cleanAndFilterGpsData(decodedData) {
     };
 }
 
-function processAndEmitGpsData(decodedData, port = null) {
-    if (!decodedData?.imei || !decodedData?.records?.length) return;
-
-    const cleanedData = cleanAndFilterGpsData(decodedData);
-    if (cleanedData.records.length === 0) return;
-
-    // Solo imprimir datos del puerto 6001
-    if (port === TCP_PORT_2) {
-        console.log(`[PUERTO 6001] Datos recibidos:`, {
-            imei: cleanedData.imei,
-            numberOfRecords: cleanedData.numberOfRecords,
-            records: cleanedData.records.map(record => ({
-                timestamp: record.timestamp,
-                latitude: record.latitude,
-                longitude: record.longitude,
-                speed: record.speed,
-                altitude: record.altitude,
-                angle: record.angle,
-                satellites: record.satellites,
-                hdop: record.hdop,
-                ioElements: record.ioElements
-            }))
-        });
-    }
-
-    cleanedData.records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-
-    const cacheKey = cleanedData.imei;
-    const cachedData = gpsDataCache.get(cacheKey);
-
-    const getRecordKey = (record) => {
-        return `${record.timestamp}_${record.latitude.toFixed(6)}_${record.longitude.toFixed(6)}`;
-    };
-
-    let hasNewData = false;
-    const newRecordsToEmit = [];
-
-    for (const record of cleanedData.records) {
-        const recordKey = getRecordKey(record);
-
-        if (!cachedData?.recordsMap || !cachedData.recordsMap[recordKey]) {
-            hasNewData = true;
-            newRecordsToEmit.push(record);
+function processAndEmitGpsData(decodedData, port = null, socket = null) {
+    // IMPORTANTE: Manejar respuesta ACK primero
+    let processingSuccess = false;
+    
+    try {
+        // Para paquetes que no son de records, enviar ACK inmediatamente
+        if (decodedData.type === 'identification') {
+            console.log(`[GPS] Paquete de identificación de IMEI: ${decodedData.imei}`);
+            handlePacketResponse(socket, decodedData, true);
+            return;
         }
-    }
-
-    if (hasNewData) {
-        const allRecords = [...newRecordsToEmit, ...(cachedData?.records || [])];
-        const recordsMap = {};
-
-        const uniqueRecords = [];
-        for (const record of allRecords) {
-            const recordKey = getRecordKey(record);
-            if (!recordsMap[recordKey]) {
-                recordsMap[recordKey] = true;
-                uniqueRecords.push(record);
-            }
+        
+        if (decodedData.type === 'heartbeat') {
+            console.log(`[GPS] Heartbeat de IMEI: ${decodedData.imei}`);
+            handlePacketResponse(socket, decodedData, true);
+            return;
+        }
+        
+        if (decodedData.type === 'dynamic_identification') {
+            console.log(`[GPS] Dynamic identification de IMEI: ${decodedData.imei}`);
+            handlePacketResponse(socket, decodedData, true);
+            return;
         }
 
-        const limitedRecords = uniqueRecords.slice(0, 100);
-
-        const dataToStore = {
-            imei: cleanedData.imei,
-            records: limitedRecords,
-            recordsMap: limitedRecords.reduce((map, record) => {
-                map[getRecordKey(record)] = true;
-                return map;
-            }, {}),
-            lastUpdated: new Date(),
-        };
-
-        const emitToAuthenticated = (data) => {
-            for (const [client, info] of clients.entries()) {
-                if (client.readyState === 1 && info.authenticated) {
-                    client.send(JSON.stringify({
-                        type: 'gps-data',
-                        data: {
-                            ...data,
-                            source_port: port // Agregar información del puerto fuente
-                        }
-                    }));
-                }
+        // Para paquetes de records
+        if (!decodedData?.imei || !decodedData?.records?.length) {
+            console.warn(`[GPS] Datos inválidos o sin records de IMEI: ${decodedData?.imei || 'unknown'}`);
+            // Enviar ACK negativo si no hay records válidos
+            if (socket && decodedData?.commandId) {
+                handlePacketResponse(socket, decodedData, false);
             }
-        };
+            return;
+        }
 
-        const allZeroSpeed = newRecordsToEmit.every((record) => record.speed === 0);
-        if (allZeroSpeed) {
-            const mostRecentRecord = newRecordsToEmit[newRecordsToEmit.length - 1];
-            const dataToEmit = {
+        const cleanedData = cleanAndFilterGpsData(decodedData);
+        
+        // Determinar si el procesamiento fue exitoso
+        processingSuccess = cleanedData.records.length > 0;
+        
+        // Enviar ACK inmediatamente después de procesar
+        if (socket && decodedData.commandId) {
+            handlePacketResponse(socket, decodedData, processingSuccess);
+        }
+        
+        if (cleanedData.records.length === 0) {
+            console.warn(`[GPS] No hay records válidos después de filtrar para IMEI: ${decodedData.imei}`);
+            return;
+        }
+
+        // Solo imprimir datos del puerto 6001
+        if (port === TCP_PORT_2) {
+            console.log(`[PUERTO 6001] Datos recibidos:`, {
                 imei: cleanedData.imei,
-                lat: mostRecentRecord.latitude,
-                lng: mostRecentRecord.longitude,
-                timestamp: mostRecentRecord.timestamp,
-                speed: mostRecentRecord.speed,
-                altitude: mostRecentRecord.altitude,
-                angle: mostRecentRecord.angle ?? null,
-                satellites: mostRecentRecord.satellites ?? null,
-                hdop: mostRecentRecord.hdop ?? null,
-                deviceno: "",
-                carlicense: "",
-                additionalData: mostRecentRecord.ioElements,
-            };
-            emitToAuthenticated(dataToEmit);
-        } else {
-            newRecordsToEmit.forEach((record) => {
-                const dataToEmit = {
-                    imei: cleanedData.imei,
-                    lat: record.latitude,
-                    lng: record.longitude,
+                numberOfRecords: cleanedData.numberOfRecords,
+                commandId: cleanedData.commandId,
+                records: cleanedData.records.map(record => ({
                     timestamp: record.timestamp,
+                    latitude: record.latitude,
+                    longitude: record.longitude,
                     speed: record.speed,
                     altitude: record.altitude,
-                    angle: record.angle ?? null,
-                    satellites: record.satellites ?? null,
-                    hdop: record.hdop ?? null,
-                    deviceno: "",
-                    carlicense: "",
-                    additionalData: record.ioElements,
-                };
-                emitToAuthenticated(dataToEmit);
+                    angle: record.angle,
+                    satellites: record.satellites,
+                    hdop: record.hdop,
+                    ioElements: record.ioElements
+                }))
             });
         }
 
-        gpsDataCache.set(cacheKey, dataToStore);
+        cleanedData.records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+        const cacheKey = cleanedData.imei;
+        const cachedData = gpsDataCache.get(cacheKey);
+
+        const getRecordKey = (record) => {
+            return `${record.timestamp}_${record.latitude.toFixed(6)}_${record.longitude.toFixed(6)}`;
+        };
+
+        let hasNewData = false;
+        const newRecordsToEmit = [];
+
+        for (const record of cleanedData.records) {
+            const recordKey = getRecordKey(record);
+
+            if (!cachedData?.recordsMap || !cachedData.recordsMap[recordKey]) {
+                hasNewData = true;
+                newRecordsToEmit.push(record);
+            }
+        }
+
+        if (hasNewData) {
+            const allRecords = [...newRecordsToEmit, ...(cachedData?.records || [])];
+            const recordsMap = {};
+
+            const uniqueRecords = [];
+            for (const record of allRecords) {
+                const recordKey = getRecordKey(record);
+                if (!recordsMap[recordKey]) {
+                    recordsMap[recordKey] = true;
+                    uniqueRecords.push(record);
+                }
+            }
+
+            const limitedRecords = uniqueRecords.slice(0, 100);
+
+            const dataToStore = {
+                imei: cleanedData.imei,
+                records: limitedRecords,
+                recordsMap: limitedRecords.reduce((map, record) => {
+                    map[getRecordKey(record)] = true;
+                    return map;
+                }, {}),
+                lastUpdated: new Date(),
+            };
+
+            const emitToAuthenticated = (data) => {
+                for (const [client, info] of clients.entries()) {
+                    if (client.readyState === 1 && info.authenticated) {
+                        client.send(JSON.stringify({
+                            type: 'gps-data',
+                            data: {
+                                ...data,
+                                source_port: port
+                            }
+                        }));
+                    }
+                }
+            };
+
+            const allZeroSpeed = newRecordsToEmit.every((record) => record.speed === 0);
+            if (allZeroSpeed) {
+                const mostRecentRecord = newRecordsToEmit[newRecordsToEmit.length - 1];
+                const dataToEmit = {
+                    imei: cleanedData.imei,
+                    lat: mostRecentRecord.latitude,
+                    lng: mostRecentRecord.longitude,
+                    timestamp: mostRecentRecord.timestamp,
+                    speed: mostRecentRecord.speed,
+                    altitude: mostRecentRecord.altitude,
+                    angle: mostRecentRecord.angle ?? null,
+                    satellites: mostRecentRecord.satellites ?? null,
+                    hdop: mostRecentRecord.hdop ?? null,
+                    deviceno: "",
+                    carlicense: "",
+                    additionalData: mostRecentRecord.ioElements,
+                };
+                emitToAuthenticated(dataToEmit);
+            } else {
+                newRecordsToEmit.forEach((record) => {
+                    const dataToEmit = {
+                        imei: cleanedData.imei,
+                        lat: record.latitude,
+                        lng: record.longitude,
+                        timestamp: record.timestamp,
+                        speed: record.speed,
+                        altitude: record.altitude,
+                        angle: record.angle ?? null,
+                        satellites: record.satellites ?? null,
+                        hdop: record.hdop ?? null,
+                        deviceno: "",
+                        carlicense: "",
+                        additionalData: record.ioElements,
+                    };
+                    emitToAuthenticated(dataToEmit);
+                });
+            }
+
+            gpsDataCache.set(cacheKey, dataToStore);
+            console.log(`[GPS] Procesados ${newRecordsToEmit.length} nuevos records para IMEI: ${cleanedData.imei}`);
+        } else {
+            console.log(`[GPS] No hay nuevos datos para IMEI: ${cleanedData.imei}`);
+        }
+
+    } catch (error) {
+        console.error(`[GPS] Error procesando datos GPS:`, error);
+        
+        // Enviar ACK negativo en caso de error
+        if (socket && decodedData?.commandId) {
+            handlePacketResponse(socket, decodedData, false);
+        }
     }
 }
 
@@ -304,6 +361,9 @@ function createTcpServer(port, serverName) {
         keepAlive: true,
         allowHalfOpen: false
     }, (socket) => {
+        const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
+        console.log(`[${serverName}] Nueva conexión desde: ${clientInfo}`);
+        
         // Configuración de timeouts más robusta
         socket.setTimeout(300000); // 5 minutos de timeout
         socket.setKeepAlive(true, 30000); // KeepAlive cada 30 segundos
@@ -314,8 +374,9 @@ function createTcpServer(port, serverName) {
 
         socket.on('data', (data) => {
             if (port === TCP_PORT_2) {
-                console.log(data)
+                console.log(`[${serverName}] Datos recibidos (${data.length} bytes):`, data.toString('hex').toUpperCase());
             }
+            
             try {
                 // Concatenar datos al buffer
                 dataBuffer = Buffer.concat([dataBuffer, data]);
@@ -324,40 +385,54 @@ function createTcpServer(port, serverName) {
                 while (dataBuffer.length > 0) {
                     const hexData = dataBuffer.toString('hex');
 
-                    // Verificar si tenemos un paquete completo
-                    // Esto depende del protocolo Ruptela, ajusta según sea necesario
-                    if (hexData.length >= 8) { // Mínimo para header
+                    // Verificar si tenemos un paquete completo mínimo
+                    if (hexData.length >= 22) { // Mínimo: packet length (4) + IMEI (16) + command (2) = 22 hex chars
                         try {
+                            // Intentar parsear el paquete
                             const decodedData = parseRuptelaPacketWithExtensions(hexData);
+                            
                             if (decodedData) {
-                                processAndEmitGpsData(decodedData, port);
-                                dataBuffer = Buffer.alloc(0); // Limpiar buffer después del procesamiento exitoso
+                                console.log(`[${serverName}] Paquete decodificado exitosamente - IMEI: ${decodedData.imei}, Command: ${decodedData.commandId}, Type: ${decodedData.type || 'records'}`);
+                                
+                                // IMPORTANTE: Pasar el socket para enviar ACK
+                                processAndEmitGpsData(decodedData, port, socket);
+                                
+                                // Limpiar buffer después del procesamiento exitoso
+                                dataBuffer = Buffer.alloc(0);
                                 break;
                             }
                         } catch (parseError) {
-                            console.warn(`[${serverName}] Error parseando paquete, esperando más datos:`, parseError.message);
+                            console.warn(`[${serverName}] Error parseando paquete (${parseError.message}), esperando más datos...`);
+                            
+                            // Si el buffer es muy grande y no podemos parsearlo, descartarlo
+                            if (dataBuffer.length > 10000) {
+                                console.error(`[${serverName}] Buffer demasiado grande (${dataBuffer.length} bytes), descartando datos`);
+                                dataBuffer = Buffer.alloc(0);
+                            }
                             break; // Esperar más datos
                         }
                     } else {
-                        break; // Esperar más datos
+                        // No hay suficientes datos para un paquete completo
+                        if (port === TCP_PORT_2 && dataBuffer.length > 0) {
+                            console.log(`[${serverName}] Esperando más datos... Buffer actual: ${dataBuffer.length} bytes`);
+                        }
+                        break;
                     }
                 }
             } catch (error) {
-                console.error(`[${serverName}] Error procesando datos GPS:`, error.message);
+                console.error(`[${serverName}] Error procesando datos TCP:`, error.message);
                 dataBuffer = Buffer.alloc(0); // Limpiar buffer en caso de error
             }
         });
 
         // Manejo de timeout
         socket.on('timeout', () => {
-            console.warn(`[${serverName}] Timeout en conexión TCP: ${socket.remoteAddress}:${socket.remotePort}`);
+            console.warn(`[${serverName}] Timeout en conexión TCP: ${clientInfo}`);
             socket.end(); // Cierra la conexión de manera elegante
         });
 
         // Manejo de errores más específico
         socket.on('error', (err) => {
-            const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
-
             switch (err.code) {
                 case 'ETIMEDOUT':
                     // console.warn(`[${serverName}] Timeout de lectura para cliente ${clientInfo}`);
@@ -380,14 +455,15 @@ function createTcpServer(port, serverName) {
 
         // Manejo de cierre de conexión
         socket.on('close', (hadError) => {
-            const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
             if (hadError) {
-                //console.warn(`[${serverName}] Cliente TCP desconectado con error: ${clientInfo}`);
+                console.warn(`[${serverName}] Cliente TCP desconectado con error: ${clientInfo}`);
+            } else {
+                console.log(`[${serverName}] Cliente TCP desconectado: ${clientInfo}`);
             }
         });
 
         socket.on('end', () => {
-            //console.log(`[${serverName}] Cliente TCP terminó la conexión: ${socket.remoteAddress}:${socket.remotePort}`);
+            console.log(`[${serverName}] Cliente TCP terminó la conexión: ${clientInfo}`);
         });
     });
 
