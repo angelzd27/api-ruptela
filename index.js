@@ -283,7 +283,7 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
                     carlicense: "",
                     additionalData: mostRecentRecord.ioElements,
                 };
-                // emitToAuthenticated(dataToEmit);
+                emitToAuthenticated(dataToEmit);
             } else {
                 newRecordsToEmit.forEach((record) => {
                     const dataToEmit = {
@@ -300,7 +300,7 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
                         carlicense: "",
                         additionalData: record.ioElements,
                     };
-                    // emitToAuthenticated(dataToEmit);
+                    emitToAuthenticated(dataToEmit);
                 });
             }
 
