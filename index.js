@@ -8,6 +8,7 @@ import { parseRuptelaPacketWithExtensions } from './controller/ruptela.js';
 import { decrypt } from './utils/encrypt.js';
 import { router_admin } from './routes/admin.js';
 import { router_artemis } from './routes/artemis.js';
+import { handlePacketResponse } from './controller/ruptela-ack.js';
 
 dotenv.config();
 
