@@ -167,7 +167,7 @@ function sendACKResponse(socket, commandId, isPositive = true, options = {}) {
  * @param {Object} decodedData - Datos decodificados del paquete
  * @param {boolean} processingSuccess - Si el procesamiento fue exitoso
  */
-function handlePacketResponse(socket, decodedData, processingSuccess = true) {
+export function handlePacketResponse(socket, decodedData, processingSuccess = true) {
     if (!socket || !decodedData || decodedData.commandId === undefined) {
         return false;
     }
@@ -182,12 +182,3 @@ function handlePacketResponse(socket, decodedData, processingSuccess = true) {
     
     return sendACKResponse(socket, decodedData.commandId, processingSuccess, options);
 }
-
-module.exports = {
-    calculateCRC16,
-    createRecordsACK,
-    createIdentificationACK,
-    createHeartbeatACK,
-    sendACKResponse,
-    handlePacketResponse
-};
