@@ -15,7 +15,8 @@ dotenv.config();
 const app = express();
 const PORT = 5000;
 const TCP_PORT = 6000;
-const TCP_PORT_2 = 6001; // Nuevo puerto TCP
+const TCP_PORT_2 = 6001; // Ruptela ECO5 Lite
+const TCP_PORT_3 = 7000; // Jimi IoT LL301
 const GETCORS = process.env.CORS;
 
 // Configuración de CORS
@@ -137,26 +138,58 @@ function cleanAndFilterGpsData(decodedData) {
     };
 }
 
+// Función específica para manejar datos del GPS Jimi IoT LL301
+function processJimiIoTData(rawData, port, socket) {
+    try {
+        const hexData = rawData.toString('hex').toUpperCase();
+        console.log(`[JIMI IoT LL301] Datos recibidos (${rawData.length} bytes):`, hexData);
+
+        // Aquí puedes agregar el parser específico para Jimi IoT cuando lo tengas
+        // Por ahora, solo mostramos los datos en consola
+
+        // Intentar mostrar también como texto ASCII (si es que tiene partes legibles)
+        const asciiData = rawData.toString('ascii').replace(/[^\x20-\x7E]/g, '.');
+        console.log(`[JIMI IoT LL301] Datos como ASCII:`, asciiData);
+
+        // Mostrar algunos bytes importantes si siguen un patrón conocido
+        if (rawData.length >= 4) {
+            console.log(`[JIMI IoT LL301] Primeros 4 bytes: ${rawData.slice(0, 4).toString('hex').toUpperCase()}`);
+        }
+        if (rawData.length >= 8) {
+            console.log(`[JIMI IoT LL301] Primeros 8 bytes: ${rawData.slice(0, 8).toString('hex').toUpperCase()}`);
+        }
+
+        // Mostrar longitud total
+        console.log(`[JIMI IoT LL301] Longitud total del mensaje: ${rawData.length} bytes`);
+
+        // TODO: Implementar parser específico para Jimi IoT LL301
+        // Una vez que tengas la documentación del protocolo, podrás parsear los datos aquí
+
+    } catch (error) {
+        console.error(`[JIMI IoT LL301] Error procesando datos:`, error.message);
+    }
+}
+
 function processAndEmitGpsData(decodedData, port = null, socket = null) {
     // IMPORTANTE: Manejar respuesta ACK primero
     let processingSuccess = false;
-    
+
     try {
         // Para paquetes que no son de records, enviar ACK inmediatamente
         if (decodedData.type === 'identification') {
-            console.log(`[GPS] Paquete de identificación de IMEI: ${decodedData.imei}`);
+            // console.log(`[GPS] Paquete de identificación de IMEI: ${decodedData.imei}`);
             handlePacketResponse(socket, decodedData, true);
             return;
         }
-        
+
         if (decodedData.type === 'heartbeat') {
-            console.log(`[GPS] Heartbeat de IMEI: ${decodedData.imei}`);
+            // console.log(`[GPS] Heartbeat de IMEI: ${decodedData.imei}`);
             handlePacketResponse(socket, decodedData, true);
             return;
         }
-        
+
         if (decodedData.type === 'dynamic_identification') {
-            console.log(`[GPS] Dynamic identification de IMEI: ${decodedData.imei}`);
+            // console.log(`[GPS] Dynamic identification de IMEI: ${decodedData.imei}`);
             handlePacketResponse(socket, decodedData, true);
             return;
         }
@@ -172,39 +205,40 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
         }
 
         const cleanedData = cleanAndFilterGpsData(decodedData);
-        
+
         // Determinar si el procesamiento fue exitoso
         processingSuccess = cleanedData.records.length > 0;
-        
+
         // Enviar ACK inmediatamente después de procesar
         if (socket && decodedData.commandId) {
             handlePacketResponse(socket, decodedData, processingSuccess);
         }
-        
+
         if (cleanedData.records.length === 0) {
             console.warn(`[GPS] No hay records válidos después de filtrar para IMEI: ${decodedData.imei}`);
             return;
         }
 
         // Solo imprimir datos del puerto 6001
-        if (port === TCP_PORT_2) {
-            console.log(`[PUERTO 6001] Datos recibidos:`, {
-                imei: cleanedData.imei,
-                numberOfRecords: cleanedData.numberOfRecords,
-                commandId: cleanedData.commandId,
-                records: cleanedData.records.map(record => ({
-                    timestamp: record.timestamp,
-                    latitude: record.latitude,
-                    longitude: record.longitude,
-                    speed: record.speed,
-                    altitude: record.altitude,
-                    angle: record.angle,
-                    satellites: record.satellites,
-                    hdop: record.hdop,
-                    ioElements: record.ioElements
-                }))
-            });
-        }
+        // if (port === TCP_PORT_2) {
+
+        //     console.log(`[PUERTO 6001] Datos recibidos:`, {
+        //         imei: cleanedData.imei,
+        //         numberOfRecords: cleanedData.numberOfRecords,
+        //         commandId: cleanedData.commandId,
+        //         records: cleanedData.records.map(record => ({
+        //             timestamp: record.timestamp,
+        //             latitude: record.latitude,
+        //             longitude: record.longitude,
+        //             speed: record.speed,
+        //             altitude: record.altitude,
+        //             angle: record.angle,
+        //             satellites: record.satellites,
+        //             hdop: record.hdop,
+        //             ioElements: record.ioElements
+        //         }))
+        //     });
+        // }
 
         cleanedData.records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
@@ -305,14 +339,14 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
             }
 
             gpsDataCache.set(cacheKey, dataToStore);
-            console.log(`[GPS] Procesados ${newRecordsToEmit.length} nuevos records para IMEI: ${cleanedData.imei}`);
+            // console.log(`[GPS] Procesados ${newRecordsToEmit.length} nuevos records para IMEI: ${cleanedData.imei}`);
         } else {
-            console.log(`[GPS] No hay nuevos datos para IMEI: ${cleanedData.imei}`);
+            // console.log(`[GPS] No hay nuevos datos para IMEI: ${cleanedData.imei}`);
         }
 
     } catch (error) {
-        console.error(`[GPS] Error procesando datos GPS:`, error);
-        
+        // console.error(`[GPS] Error procesando datos GPS:`, error);
+
         // Enviar ACK negativo en caso de error
         if (socket && decodedData?.commandId) {
             handlePacketResponse(socket, decodedData, false);
@@ -363,7 +397,7 @@ function createTcpServer(port, serverName) {
     }, (socket) => {
         const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
         console.log(`[${serverName}] Nueva conexión desde: ${clientInfo}`);
-        
+
         // Configuración de timeouts más robusta
         socket.setTimeout(300000); // 5 minutos de timeout
         socket.setKeepAlive(true, 30000); // KeepAlive cada 30 segundos
@@ -373,15 +407,20 @@ function createTcpServer(port, serverName) {
         let dataBuffer = Buffer.alloc(0);
 
         socket.on('data', (data) => {
+            // Mostrar datos recibidos según el puerto
             if (port === TCP_PORT_2) {
-                console.log(`[${serverName}] Datos recibidos (${data.length} bytes):`, data.toString('hex').toUpperCase());
+                // console.log(`[${serverName}] Datos recibidos (${data.length} bytes):`, data.toString('hex').toUpperCase());
+            } else if (port === TCP_PORT_3) {
+                // Para el puerto 7000 (Jimi IoT), procesar directamente
+                processJimiIoTData(data, port, socket);
+                return; // No continuar con el procesamiento de Ruptela
             }
-            
+
             try {
-                // Concatenar datos al buffer
+                // Concatenar datos al buffer (solo para puertos Ruptela)
                 dataBuffer = Buffer.concat([dataBuffer, data]);
 
-                // Procesar paquetes completos
+                // Procesar paquetes completos (solo para puertos Ruptela)
                 while (dataBuffer.length > 0) {
                     const hexData = dataBuffer.toString('hex');
 
@@ -390,23 +429,23 @@ function createTcpServer(port, serverName) {
                         try {
                             // Intentar parsear el paquete
                             const decodedData = parseRuptelaPacketWithExtensions(hexData);
-                            
+
                             if (decodedData) {
-                                console.log(`[${serverName}] Paquete decodificado exitosamente - IMEI: ${decodedData.imei}, Command: ${decodedData.commandId}, Type: ${decodedData.type || 'records'}`);
-                                
+                                // console.log(`[${serverName}] Paquete decodificado exitosamente - IMEI: ${decodedData.imei}, Command: ${decodedData.commandId}, Type: ${decodedData.type || 'records'}`);
+
                                 // IMPORTANTE: Pasar el socket para enviar ACK
                                 processAndEmitGpsData(decodedData, port, socket);
-                                
+
                                 // Limpiar buffer después del procesamiento exitoso
                                 dataBuffer = Buffer.alloc(0);
                                 break;
                             }
                         } catch (parseError) {
-                            console.warn(`[${serverName}] Error parseando paquete (${parseError.message}), esperando más datos...`);
-                            
+                            // console.warn(`[${serverName}] Error parseando paquete (${parseError.message}), esperando más datos...`);
+
                             // Si el buffer es muy grande y no podemos parsearlo, descartarlo
                             if (dataBuffer.length > 10000) {
-                                console.error(`[${serverName}] Buffer demasiado grande (${dataBuffer.length} bytes), descartando datos`);
+                                // console.error(`[${serverName}] Buffer demasiado grande (${dataBuffer.length} bytes), descartando datos`);
                                 dataBuffer = Buffer.alloc(0);
                             }
                             break; // Esperar más datos
@@ -414,7 +453,7 @@ function createTcpServer(port, serverName) {
                     } else {
                         // No hay suficientes datos para un paquete completo
                         if (port === TCP_PORT_2 && dataBuffer.length > 0) {
-                            console.log(`[${serverName}] Esperando más datos... Buffer actual: ${dataBuffer.length} bytes`);
+                            // console.log(`[${serverName}] Esperando más datos... Buffer actual: ${dataBuffer.length} bytes`);
                         }
                         break;
                     }
@@ -485,18 +524,20 @@ function createTcpServer(port, serverName) {
     return tcpServer;
 }
 
-// Crear ambos servidores TCP
-const tcpServer1 = createTcpServer(TCP_PORT, 'TCP-6000');
-const tcpServer2 = createTcpServer(TCP_PORT_2, 'TCP-6001');
+// Crear los tres servidores TCP
+const tcpServer1 = createTcpServer(TCP_PORT, 'TCP-6000-Ruptela-Pro5');
+const tcpServer2 = createTcpServer(TCP_PORT_2, 'TCP-6001-Ruptela-ECO5');
+const tcpServer3 = createTcpServer(TCP_PORT_3, 'TCP-7000-Jimi-LL301');
 
 // Función para limpiar conexiones inactivas periódicamente
 setInterval(() => {
     const connections1 = tcpServer1.connections || 0;
     const connections2 = tcpServer2.connections || 0;
-    const totalConnections = connections1 + connections2;
+    const connections3 = tcpServer3.connections || 0;
+    const totalConnections = connections1 + connections2 + connections3;
 
     if (totalConnections > 0) {
-        console.log(`Conexiones TCP activas - Puerto 6000: ${connections1}, Puerto 6001: ${connections2}, Total: ${totalConnections}`);
+        console.log(`Conexiones TCP activas - Puerto 6000: ${connections1}, Puerto 6001: ${connections2}, Puerto 7000: ${connections3}, Total: ${totalConnections}`);
     }
 }, 60000); // Cada minuto
 
@@ -519,9 +560,12 @@ process.on('SIGTERM', () => {
         console.log('Servidor TCP 6000 cerrado');
         tcpServer2.close(() => {
             console.log('Servidor TCP 6001 cerrado');
-            httpServer.close(() => {
-                console.log('Servidor HTTP cerrado');
-                process.exit(0);
+            tcpServer3.close(() => {
+                console.log('Servidor TCP 7000 cerrado');
+                httpServer.close(() => {
+                    console.log('Servidor HTTP cerrado');
+                    process.exit(0);
+                });
             });
         });
     });
@@ -533,9 +577,12 @@ process.on('SIGINT', () => {
         console.log('Servidor TCP 6000 cerrado');
         tcpServer2.close(() => {
             console.log('Servidor TCP 6001 cerrado');
-            httpServer.close(() => {
-                console.log('Servidor HTTP cerrado');
-                process.exit(0);
+            tcpServer3.close(() => {
+                console.log('Servidor TCP 7000 cerrado');
+                httpServer.close(() => {
+                    console.log('Servidor HTTP cerrado');
+                    process.exit(0);
+                });
             });
         });
     });
