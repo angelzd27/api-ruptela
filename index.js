@@ -9,6 +9,8 @@ import { decrypt } from './utils/encrypt.js';
 import { router_admin } from './routes/admin.js';
 import { router_artemis } from './routes/artemis.js';
 import { handlePacketResponse } from './controller/ruptela-ack.js';
+// Importar las funciones del parser Jimi IoT
+import { parseJimiIoTPacket, handleJimiIoTResponse } from './utils/jimi-iot-parser.js';
 
 dotenv.config();
 
@@ -142,31 +144,133 @@ function cleanAndFilterGpsData(decodedData) {
 function processJimiIoTData(rawData, port, socket) {
     try {
         const hexData = rawData.toString('hex').toUpperCase();
-        console.log(`[JIMI IoT LL301] Datos recibidos (${rawData.length} bytes):`, hexData);
+        console.log(`[JIMI IoT LL301] 📡 Datos recibidos (${rawData.length} bytes):`, hexData);
 
-        // Aquí puedes agregar el parser específico para Jimi IoT cuando lo tengas
-        // Por ahora, solo mostramos los datos en consola
+        // SEGURIDAD: Intentar parsear, si falla, solo hacer logging
+        let parsedData;
+        try {
+            parsedData = parseJimiIoTPacket(hexData);
+        } catch (parseError) {
+            console.error(`[JIMI IoT LL301] ❌ Error en parser, fallback a logging:`, parseError.message);
 
-        // Intentar mostrar también como texto ASCII (si es que tiene partes legibles)
-        const asciiData = rawData.toString('ascii').replace(/[^\x20-\x7E]/g, '.');
-        console.log(`[JIMI IoT LL301] Datos como ASCII:`, asciiData);
-
-        // Mostrar algunos bytes importantes si siguen un patrón conocido
-        if (rawData.length >= 4) {
-            console.log(`[JIMI IoT LL301] Primeros 4 bytes: ${rawData.slice(0, 4).toString('hex').toUpperCase()}`);
+            // Fallback: solo mostrar datos básicos
+            const asciiData = rawData.toString('ascii').replace(/[^\x20-\x7E]/g, '.');
+            console.log(`[JIMI IoT LL301] 📝 ASCII: ${asciiData}`);
+            console.log(`[JIMI IoT LL301] 📝 Primeros bytes: ${rawData.slice(0, Math.min(8, rawData.length)).toString('hex').toUpperCase()}`);
+            return; // Salir sin crashear
         }
-        if (rawData.length >= 8) {
-            console.log(`[JIMI IoT LL301] Primeros 8 bytes: ${rawData.slice(0, 8).toString('hex').toUpperCase()}`);
+
+        if (parsedData && parsedData.parsed) {
+            console.log(`[JIMI IoT LL301] ✅ Paquete parseado exitosamente:`, {
+                tipo: parsedData.type,
+                protocolo: `0x${parsedData.protocolNumber.toString(16)}`,
+                imei: parsedData.imei || 'N/A',
+                timestamp: parsedData.timestamp ? parsedData.timestamp.toISOString() : 'N/A',
+                latitude: parsedData.latitude || 'N/A',
+                longitude: parsedData.longitude || 'N/A',
+                speed: parsedData.speed !== undefined ? `${parsedData.speed} km/h` : 'N/A',
+                satellites: parsedData.satellites || 'N/A',
+                serialNumber: parsedData.serialNumber || 'N/A',
+                valid: parsedData.valid !== undefined ? parsedData.valid : 'N/A',
+                batteryLevel: parsedData.batteryLevel ? `${parsedData.batteryLevel}%` : 'N/A',
+                deviceModel: parsedData.deviceModel || 'N/A'
+            });
+
+            // SEGURIDAD: Intentar enviar ACK, si falla, continuar
+            if (parsedData.needsACK) {
+                try {
+                    const ackSent = handleJimiIoTResponse(socket, parsedData);
+                    if (!ackSent) {
+                        console.warn(`[JIMI IoT LL301] ⚠️  No se pudo enviar ACK, pero continuando...`);
+                    }
+                } catch (ackError) {
+                    console.error(`[JIMI IoT LL301] ❌ Error enviando ACK:`, ackError.message);
+                    // No hacer return, continuar procesando
+                }
+            }
+
+            // Si es un paquete GPS con coordenadas válidas, emitir a WebSocket
+            if (parsedData.type === 'gps' && parsedData.latitude && parsedData.longitude && parsedData.valid) {
+                try {
+                    const dataToEmit = {
+                        imei: parsedData.imei || 'jimi_unknown',
+                        lat: parsedData.latitude,
+                        lng: parsedData.longitude,
+                        timestamp: parsedData.timestamp || new Date(),
+                        speed: parsedData.speed || 0,
+                        altitude: 0, // No disponible en protocolo básico
+                        angle: parsedData.course || null,
+                        satellites: parsedData.satellites || null,
+                        hdop: null, // No disponible en protocolo básico
+                        deviceno: "",
+                        carlicense: "",
+                        additionalData: {
+                            protocol: 'jimi_iot_gt06',
+                            protocolNumber: `0x${parsedData.protocolNumber.toString(16)}`,
+                            serialNumber: parsedData.serialNumber,
+                            batteryLevel: parsedData.batteryLevel,
+                            batteryVoltage: parsedData.batteryVoltage,
+                            gsmSignal: parsedData.gsmSignal,
+                            deviceModel: parsedData.deviceModel
+                        },
+                        source_port: port
+                    };
+
+                    // Emitir a clientes WebSocket autenticados
+                    let clientsSent = 0;
+                    for (const [client, info] of clients.entries()) {
+                        if (client.readyState === 1 && info.authenticated) {
+                            try {
+                                client.send(JSON.stringify({
+                                    type: 'gps-data',
+                                    data: dataToEmit
+                                }));
+                                clientsSent++;
+                            } catch (wsError) {
+                                console.error(`[JIMI IoT LL301] Error enviando a WebSocket:`, wsError.message);
+                            }
+                        }
+                    }
+
+                    console.log(`[JIMI IoT LL301] 🌍 Datos GPS enviados a ${clientsSent} clientes WebSocket - Lat: ${parsedData.latitude}, Lng: ${parsedData.longitude}`);
+                } catch (emitError) {
+                    console.error(`[JIMI IoT LL301] ❌ Error procesando datos GPS:`, emitError.message);
+                }
+            }
+
+            // Si es login, guardar IMEI para referencia
+            if (parsedData.type === 'login' && parsedData.imei) {
+                console.log(`[JIMI IoT LL301] 🔐 Dispositivo conectado - IMEI: ${parsedData.imei}`);
+            }
+
+        } else {
+            console.warn(`[JIMI IoT LL301] ⚠️  Paquete no parseado correctamente:`, parsedData?.error || 'Razón desconocida');
+
+            // Mostrar información básica para debugging
+            const asciiData = rawData.toString('ascii').replace(/[^\x20-\x7E]/g, '.');
+            console.log(`[JIMI IoT LL301] 📝 Datos como ASCII:`, asciiData);
+
+            if (rawData.length >= 4) {
+                console.log(`[JIMI IoT LL301] 📝 Primeros 4 bytes: ${rawData.slice(0, 4).toString('hex').toUpperCase()}`);
+            }
+            if (rawData.length >= 8) {
+                console.log(`[JIMI IoT LL301] 📝 Primeros 8 bytes: ${rawData.slice(0, 8).toString('hex').toUpperCase()}`);
+            }
         }
 
-        // Mostrar longitud total
-        console.log(`[JIMI IoT LL301] Longitud total del mensaje: ${rawData.length} bytes`);
-
-        // TODO: Implementar parser específico para Jimi IoT LL301
-        // Una vez que tengas la documentación del protocolo, podrás parsear los datos aquí
+        console.log(`[JIMI IoT LL301] 📏 Longitud total del mensaje: ${rawData.length} bytes`);
 
     } catch (error) {
-        console.error(`[JIMI IoT LL301] Error procesando datos:`, error.message);
+        console.error(`[JIMI IoT LL301] 💥 Error crítico procesando datos:`, error.message);
+        console.error(`[JIMI IoT LL301] 💥 Stack:`, error.stack);
+
+        // Fallback completo: solo mostrar hex data
+        try {
+            const hexData = rawData.toString('hex').toUpperCase();
+            console.log(`[JIMI IoT LL301] 🆘 Fallback - HEX: ${hexData}`);
+        } catch (fallbackError) {
+            console.error(`[JIMI IoT LL301] 💀 Error en fallback:`, fallbackError.message);
+        }
     }
 }
 
@@ -177,19 +281,19 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
     try {
         // Para paquetes que no son de records, enviar ACK inmediatamente
         if (decodedData.type === 'identification') {
-            // console.log(`[GPS] Paquete de identificación de IMEI: ${decodedData.imei}`);
+            console.log(`[GPS] Paquete de identificación de IMEI: ${decodedData.imei}`);
             handlePacketResponse(socket, decodedData, true);
             return;
         }
 
         if (decodedData.type === 'heartbeat') {
-            // console.log(`[GPS] Heartbeat de IMEI: ${decodedData.imei}`);
+            console.log(`[GPS] Heartbeat de IMEI: ${decodedData.imei}`);
             handlePacketResponse(socket, decodedData, true);
             return;
         }
 
         if (decodedData.type === 'dynamic_identification') {
-            // console.log(`[GPS] Dynamic identification de IMEI: ${decodedData.imei}`);
+            console.log(`[GPS] Dynamic identification de IMEI: ${decodedData.imei}`);
             handlePacketResponse(socket, decodedData, true);
             return;
         }
@@ -220,25 +324,24 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
         }
 
         // Solo imprimir datos del puerto 6001
-        // if (port === TCP_PORT_2) {
-
-        //     console.log(`[PUERTO 6001] Datos recibidos:`, {
-        //         imei: cleanedData.imei,
-        //         numberOfRecords: cleanedData.numberOfRecords,
-        //         commandId: cleanedData.commandId,
-        //         records: cleanedData.records.map(record => ({
-        //             timestamp: record.timestamp,
-        //             latitude: record.latitude,
-        //             longitude: record.longitude,
-        //             speed: record.speed,
-        //             altitude: record.altitude,
-        //             angle: record.angle,
-        //             satellites: record.satellites,
-        //             hdop: record.hdop,
-        //             ioElements: record.ioElements
-        //         }))
-        //     });
-        // }
+        if (port === TCP_PORT_2) {
+            console.log(`[PUERTO 6001] Datos recibidos:`, {
+                imei: cleanedData.imei,
+                numberOfRecords: cleanedData.numberOfRecords,
+                commandId: cleanedData.commandId,
+                records: cleanedData.records.map(record => ({
+                    timestamp: record.timestamp,
+                    latitude: record.latitude,
+                    longitude: record.longitude,
+                    speed: record.speed,
+                    altitude: record.altitude,
+                    angle: record.angle,
+                    satellites: record.satellites,
+                    hdop: record.hdop,
+                    ioElements: record.ioElements
+                }))
+            });
+        }
 
         cleanedData.records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
@@ -339,13 +442,13 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
             }
 
             gpsDataCache.set(cacheKey, dataToStore);
-            // console.log(`[GPS] Procesados ${newRecordsToEmit.length} nuevos records para IMEI: ${cleanedData.imei}`);
+            console.log(`[GPS] Procesados ${newRecordsToEmit.length} nuevos records para IMEI: ${cleanedData.imei}`);
         } else {
-            // console.log(`[GPS] No hay nuevos datos para IMEI: ${cleanedData.imei}`);
+            console.log(`[GPS] No hay nuevos datos para IMEI: ${cleanedData.imei}`);
         }
 
     } catch (error) {
-        // console.error(`[GPS] Error procesando datos GPS:`, error);
+        console.error(`[GPS] Error procesando datos GPS:`, error);
 
         // Enviar ACK negativo en caso de error
         if (socket && decodedData?.commandId) {
@@ -409,7 +512,7 @@ function createTcpServer(port, serverName) {
         socket.on('data', (data) => {
             // Mostrar datos recibidos según el puerto
             if (port === TCP_PORT_2) {
-                // console.log(`[${serverName}] Datos recibidos (${data.length} bytes):`, data.toString('hex').toUpperCase());
+                console.log(`[${serverName}] Datos recibidos (${data.length} bytes):`, data.toString('hex').toUpperCase());
             } else if (port === TCP_PORT_3) {
                 // Para el puerto 7000 (Jimi IoT), procesar directamente
                 processJimiIoTData(data, port, socket);
@@ -431,7 +534,7 @@ function createTcpServer(port, serverName) {
                             const decodedData = parseRuptelaPacketWithExtensions(hexData);
 
                             if (decodedData) {
-                                // console.log(`[${serverName}] Paquete decodificado exitosamente - IMEI: ${decodedData.imei}, Command: ${decodedData.commandId}, Type: ${decodedData.type || 'records'}`);
+                                console.log(`[${serverName}] Paquete decodificado exitosamente - IMEI: ${decodedData.imei}, Command: ${decodedData.commandId}, Type: ${decodedData.type || 'records'}`);
 
                                 // IMPORTANTE: Pasar el socket para enviar ACK
                                 processAndEmitGpsData(decodedData, port, socket);
@@ -441,11 +544,11 @@ function createTcpServer(port, serverName) {
                                 break;
                             }
                         } catch (parseError) {
-                            // console.warn(`[${serverName}] Error parseando paquete (${parseError.message}), esperando más datos...`);
+                            console.warn(`[${serverName}] Error parseando paquete (${parseError.message}), esperando más datos...`);
 
                             // Si el buffer es muy grande y no podemos parsearlo, descartarlo
                             if (dataBuffer.length > 10000) {
-                                // console.error(`[${serverName}] Buffer demasiado grande (${dataBuffer.length} bytes), descartando datos`);
+                                console.error(`[${serverName}] Buffer demasiado grande (${dataBuffer.length} bytes), descartando datos`);
                                 dataBuffer = Buffer.alloc(0);
                             }
                             break; // Esperar más datos
@@ -453,7 +556,7 @@ function createTcpServer(port, serverName) {
                     } else {
                         // No hay suficientes datos para un paquete completo
                         if (port === TCP_PORT_2 && dataBuffer.length > 0) {
-                            // console.log(`[${serverName}] Esperando más datos... Buffer actual: ${dataBuffer.length} bytes`);
+                            console.log(`[${serverName}] Esperando más datos... Buffer actual: ${dataBuffer.length} bytes`);
                         }
                         break;
                     }
