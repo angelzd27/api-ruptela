@@ -122,28 +122,28 @@ function sendACKResponse(socket, commandId, isPositive = true, options = {}) {
         switch (commandId) {
             case 1: // Records
                 ackBuffer = createRecordsACK(isPositive);
-                console.log(`[ACK] Enviando ACK ${isPositive ? 'positivo' : 'negativo'} para Records (Command 1)`);
+                // console.log(`[ACK] Enviando ACK ${isPositive ? 'positivo' : 'negativo'} para Records (Command 1)`);
                 break;
                 
             case 68: // Extended Protocol Records  
                 ackBuffer = createRecordsACK(isPositive);
-                console.log(`[ACK] Enviando ACK ${isPositive ? 'positivo' : 'negativo'} para Extended Records (Command 68)`);
+                // console.log(`[ACK] Enviando ACK ${isPositive ? 'positivo' : 'negativo'} para Extended Records (Command 68)`);
                 break;
                 
             case 15: // Identification packet
                 const isAuthorized = options.isAuthorized !== undefined ? options.isAuthorized : true;
                 const delayMinutes = options.delayMinutes || 0;
                 ackBuffer = createIdentificationACK(isAuthorized, delayMinutes);
-                console.log(`[ACK] Enviando ACK ${isAuthorized ? 'autorizado' : 'no autorizado'} para Identification (Command 15)`);
+                // console.log(`[ACK] Enviando ACK ${isAuthorized ? 'autorizado' : 'no autorizado'} para Identification (Command 15)`);
                 break;
                 
             case 16: // Heartbeat
                 ackBuffer = createHeartbeatACK();
-                console.log(`[ACK] Enviando ACK para Heartbeat (Command 16)`);
+                // console.log(`[ACK] Enviando ACK para Heartbeat (Command 16)`);
                 break;
                 
             default:
-                console.warn(`[ACK] No hay respuesta ACK definida para command ${commandId}`);
+                // console.warn(`[ACK] No hay respuesta ACK definida para command ${commandId}`);
                 return false;
         }
         
@@ -151,12 +151,12 @@ function sendACKResponse(socket, commandId, isPositive = true, options = {}) {
         socket.write(ackBuffer);
         
         // Log del buffer enviado (útil para debugging)
-        console.log(`[ACK] Buffer enviado: ${ackBuffer.toString('hex').toUpperCase()}`);
+        // console.log(`[ACK] Buffer enviado: ${ackBuffer.toString('hex').toUpperCase()}`);
         
         return true;
         
     } catch (error) {
-        console.error('[ACK] Error enviando ACK:', error);
+        // console.error('[ACK] Error enviando ACK:', error);
         return false;
     }
 }

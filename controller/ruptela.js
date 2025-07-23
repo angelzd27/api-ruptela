@@ -56,7 +56,7 @@ export const parseRuptelaPacketWithExtensions = (hexData) => {
 
     // Manejar diferentes tipos de comandos
     if (commandId === 15) { // Identification packet
-        console.log(`[PARSER] Paquete de identificación recibido de IMEI: ${imei}`);
+        // console.log(`[PARSER] Paquete de identificación recibido de IMEI: ${imei}`);
         
         // Para paquetes de identificación, parsear el payload específico
         if (payload.length >= 37) {
@@ -96,7 +96,7 @@ export const parseRuptelaPacketWithExtensions = (hexData) => {
     }
     
     if (commandId === 16) { // Heartbeat
-        console.log(`[PARSER] Heartbeat recibido de IMEI: ${imei}`);
+        // console.log(`[PARSER] Heartbeat recibido de IMEI: ${imei}`);
         return {
             packetLength,
             imei,
@@ -107,7 +107,7 @@ export const parseRuptelaPacketWithExtensions = (hexData) => {
     }
 
     if (commandId === 18) { // Dynamic identification packet
-        console.log(`[PARSER] Dynamic identification packet recibido de IMEI: ${imei}`);
+        // console.log(`[PARSER] Dynamic identification packet recibido de IMEI: ${imei}`);
         return {
             packetLength,
             imei,
@@ -120,7 +120,7 @@ export const parseRuptelaPacketWithExtensions = (hexData) => {
 
     // Para comandos 1 (Records) y 68 (Extended Records)
     if (commandId === 1 || commandId === 68) {
-        console.log(`[PARSER] ${commandId === 1 ? 'Records' : 'Extended Records'} recibido de IMEI: ${imei}`);
+        // console.log(`[PARSER] ${commandId === 1 ? 'Records' : 'Extended Records'} recibido de IMEI: ${imei}`);
         
         // Step 5: Parse Payload para records
         let offset = 0;
@@ -133,7 +133,7 @@ export const parseRuptelaPacketWithExtensions = (hexData) => {
         const numRecords = payload.readUInt8(offset++);
         const records = [];
 
-        console.log(`[PARSER] Procesando ${numRecords} records, ${recordsLeft} records restantes en dispositivo`);
+        // console.log(`[PARSER] Procesando ${numRecords} records, ${recordsLeft} records restantes en dispositivo`);
 
         for (let recordIndex = 0; recordIndex < numRecords; recordIndex++) {
             // Para extended records (command 68), el header es de 25 bytes
@@ -257,7 +257,7 @@ export const parseRuptelaPacketWithExtensions = (hexData) => {
     }
 
     // Para otros comandos, retornar estructura básica
-    console.log(`[PARSER] Comando no manejado: ${commandId} de IMEI: ${imei}`);
+    // console.log(`[PARSER] Comando no manejado: ${commandId} de IMEI: ${imei}`);
     return {
         packetLength,
         imei,
