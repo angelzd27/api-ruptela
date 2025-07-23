@@ -76,6 +76,137 @@ app.post('/eventRcv', (req, res) => {
     }
 });
 
+// ========================================
+// FUNCIONES PARA COMANDOS JIMI IoT GPS
+// ========================================
+
+/**
+ * Solicita ubicación GPS al dispositivo Jimi IoT
+ */
+function requestGPSLocation(socket, serialNumber = 1) {
+    try {
+        const buffer = Buffer.alloc(10);
+
+        // Start flag
+        buffer.writeUInt16BE(0x7878, 0);
+
+        // Length (5 bytes)
+        buffer.writeUInt8(0x05, 2);
+
+        // Protocol 0x80 - Request location
+        buffer.writeUInt8(0x80, 3);
+
+        // Serial number
+        buffer.writeUInt16BE(serialNumber, 4);
+
+        // Calculate CRC
+        const dataForCRC = buffer.slice(2, 6);
+        let crc = 0xFFFF;
+        for (let i = 0; i < dataForCRC.length; i++) {
+            crc ^= (dataForCRC[i] << 8);
+            for (let j = 0; j < 8; j++) {
+                if ((crc & 0x8000) > 0) {
+                    crc = (crc << 1) ^ 0x1021;
+                } else {
+                    crc <<= 1;
+                }
+            }
+        }
+        buffer.writeUInt16BE(crc & 0xFFFF, 6);
+
+        // End flag
+        buffer.writeUInt16BE(0x0D0A, 8);
+
+        socket.write(buffer);
+        console.log(`[JIMI CMD] 📍 Solicitando ubicación GPS - Buffer: ${buffer.toString('hex').toUpperCase()}`);
+
+        return true;
+    } catch (error) {
+        console.error('[JIMI CMD] Error solicitando GPS:', error);
+        return false;
+    }
+}
+
+/**
+ * Solicita información de estado del dispositivo
+ */
+function requestDeviceStatus(socket, serialNumber = 1) {
+    try {
+        const buffer = Buffer.alloc(10);
+
+        buffer.writeUInt16BE(0x7878, 0);
+        buffer.writeUInt8(0x05, 2);
+        buffer.writeUInt8(0x8A, 3); // Status request
+        buffer.writeUInt16BE(serialNumber, 4);
+
+        // Calculate CRC
+        const dataForCRC = buffer.slice(2, 6);
+        let crc = 0xFFFF;
+        for (let i = 0; i < dataForCRC.length; i++) {
+            crc ^= (dataForCRC[i] << 8);
+            for (let j = 0; j < 8; j++) {
+                if ((crc & 0x8000) > 0) {
+                    crc = (crc << 1) ^ 0x1021;
+                } else {
+                    crc <<= 1;
+                }
+            }
+        }
+        buffer.writeUInt16BE(crc & 0xFFFF, 6);
+        buffer.writeUInt16BE(0x0D0A, 8);
+
+        socket.write(buffer);
+        console.log(`[JIMI CMD] 📊 Solicitando estado del dispositivo - Buffer: ${buffer.toString('hex').toUpperCase()}`);
+
+        return true;
+    } catch (error) {
+        console.error('[JIMI CMD] Error solicitando estado:', error);
+        return false;
+    }
+}
+
+/**
+ * Configura intervalo de reporte GPS
+ */
+function setGPSInterval(socket, intervalSeconds = 30, serialNumber = 1) {
+    try {
+        const buffer = Buffer.alloc(12);
+
+        buffer.writeUInt16BE(0x7878, 0);
+        buffer.writeUInt8(0x07, 2); // 7 bytes of data
+        buffer.writeUInt8(0x84, 3); // Set interval command
+
+        // Interval in seconds (2 bytes)
+        buffer.writeUInt16BE(intervalSeconds, 4);
+
+        buffer.writeUInt16BE(serialNumber, 6);
+
+        // Calculate CRC
+        const dataForCRC = buffer.slice(2, 8);
+        let crc = 0xFFFF;
+        for (let i = 0; i < dataForCRC.length; i++) {
+            crc ^= (dataForCRC[i] << 8);
+            for (let j = 0; j < 8; j++) {
+                if ((crc & 0x8000) > 0) {
+                    crc = (crc << 1) ^ 0x1021;
+                } else {
+                    crc <<= 1;
+                }
+            }
+        }
+        buffer.writeUInt16BE(crc & 0xFFFF, 8);
+        buffer.writeUInt16BE(0x0D0A, 10);
+
+        socket.write(buffer);
+        console.log(`[JIMI CMD] ⏰ Configurando intervalo GPS a ${intervalSeconds}s - Buffer: ${buffer.toString('hex').toUpperCase()}`);
+
+        return true;
+    } catch (error) {
+        console.error('[JIMI CMD] Error configurando intervalo:', error);
+        return false;
+    }
+}
+
 function cleanAndFilterGpsData(decodedData) {
     if (!decodedData?.records?.length) return decodedData;
 
@@ -140,7 +271,7 @@ function cleanAndFilterGpsData(decodedData) {
     };
 }
 
-// Función específica para manejar datos del GPS Jimi IoT LL301
+// Función específica para manejar datos del GPS Jimi IoT LL301 - VERSIÓN ACTUALIZADA
 function processJimiIoTData(rawData, port, socket) {
     try {
         const hexData = rawData.toString('hex').toUpperCase();
@@ -187,6 +318,49 @@ function processJimiIoTData(rawData, port, socket) {
                     console.error(`[JIMI IoT LL301] ❌ Error enviando ACK:`, ackError.message);
                     // No hacer return, continuar procesando
                 }
+            }
+
+            // **NUEVO: Manejar login y solicitar GPS**
+            if (parsedData.type === 'login' && parsedData.imei) {
+                console.log(`[JIMI IoT LL301] 🔐 Dispositivo conectado - IMEI: ${parsedData.imei}`);
+
+                // Solicitar datos GPS después del login exitoso
+                setTimeout(() => {
+                    console.log('[JIMI IoT LL301] 🔄 Iniciando solicitud de datos GPS...');
+
+                    // Solicitar ubicación GPS
+                    requestGPSLocation(socket, parsedData.serialNumber);
+
+                    // Solicitar estado del dispositivo
+                    setTimeout(() => {
+                        requestDeviceStatus(socket, parsedData.serialNumber);
+                    }, 1000);
+
+                    // Configurar intervalo de reporte cada 30 segundos
+                    setTimeout(() => {
+                        setGPSInterval(socket, 30, parsedData.serialNumber);
+                    }, 2000);
+
+                    // Solicitar ubicación periódicamente cada 60 segundos
+                    const intervalId = setInterval(() => {
+                        if (socket && !socket.destroyed) {
+                            console.log('[JIMI IoT LL301] 🔄 Solicitando ubicación periódica...');
+                            requestGPSLocation(socket, parsedData.serialNumber);
+                        } else {
+                            clearInterval(intervalId);
+                        }
+                    }, 60000); // Cada 60 segundos
+
+                }, 2000); // Esperar 2 segundos después del login
+            }
+
+            // **NUEVO: Manejar heartbeat**
+            if (parsedData.type === 'heartbeat') {
+                console.log(`[JIMI IoT LL301] 💓 Heartbeat recibido`);
+                // Aprovechar heartbeat para solicitar ubicación
+                setTimeout(() => {
+                    requestGPSLocation(socket, parsedData.serialNumber);
+                }, 500);
             }
 
             // Si es un paquete GPS con coordenadas válidas, emitir a WebSocket
@@ -236,11 +410,6 @@ function processJimiIoTData(rawData, port, socket) {
                 } catch (emitError) {
                     console.error(`[JIMI IoT LL301] ❌ Error procesando datos GPS:`, emitError.message);
                 }
-            }
-
-            // Si es login, guardar IMEI para referencia
-            if (parsedData.type === 'login' && parsedData.imei) {
-                console.log(`[JIMI IoT LL301] 🔐 Dispositivo conectado - IMEI: ${parsedData.imei}`);
             }
 
         } else {
