@@ -71,6 +71,200 @@ function calculateJimiCRC16(data) {
 }
 
 /**
+ * Sistema de logging avanzado - AGREGADO
+ */
+class JimiLogger {
+    constructor(enableDebug = false) {
+        this.enableDebug = enableDebug;
+        this.deviceSessions = new Map();
+    }
+
+    startSession(imei, socket) {
+        const sessionId = `${imei}_${Date.now()}`;
+        this.deviceSessions.set(imei, {
+            sessionId,
+            startTime: new Date(),
+            socket,
+            packetsReceived: 0,
+            gpsPacketsReceived: 0,
+            lastActivity: new Date(),
+            protocols: new Set()
+        });
+
+        console.log(`[JIMI SESSION] 🚀 Nueva sesión - IMEI: ${imei}`);
+        return sessionId;
+    }
+
+    logPacket(imei, protocolNumber, packetSize, isValid = true) {
+        const session = this.deviceSessions.get(imei);
+        if (session) {
+            session.packetsReceived++;
+            session.lastActivity = new Date();
+            session.protocols.add(`0x${protocolNumber.toString(16)}`);
+
+            if (protocolNumber === 0xA0 || protocolNumber === 0x22) {
+                session.gpsPacketsReceived++;
+            }
+        }
+
+        const status = isValid ? '✅' : '❌';
+        console.log(`[JIMI PACKET] ${status} ${imei} | Proto: 0x${protocolNumber.toString(16)} | ${packetSize}b`);
+    }
+
+    logGPSData(imei, latitude, longitude, valid, satellites) {
+        const status = valid ? '🌍' : '🚫';
+        console.log(`[JIMI GPS] ${status} ${imei} | Lat: ${latitude.toFixed(6)} | Lon: ${longitude.toFixed(6)} | Sats: ${satellites || 'N/A'}`);
+    }
+
+    getActiveDevices() {
+        return Array.from(this.deviceSessions.keys());
+    }
+
+    getSessionInfo(imei) {
+        return this.deviceSessions.get(imei);
+    }
+
+    endSession(imei) {
+        const session = this.deviceSessions.get(imei);
+        if (session) {
+            const duration = Math.round((Date.now() - session.startTime.getTime()) / 60000);
+            console.log(`[JIMI SESSION] 📊 Fin ${imei} - ${duration}min, ${session.packetsReceived} paquetes, ${session.gpsPacketsReceived} GPS`);
+            this.deviceSessions.delete(imei);
+        }
+    }
+}
+
+// Instancia global del logger - AGREGADO
+const jimiLogger = new JimiLogger(process.env.NODE_ENV === 'development');
+
+/**
+ * GPS Manager inteligente - AGREGADO
+ */
+class JimiGPSManager {
+    constructor(socket, imei, baseSerial = 1) {
+        this.socket = socket;
+        this.imei = imei;
+        this.serialCounter = baseSerial;
+        this.lastGPSReceived = null;
+        this.requestInterval = null;
+        this.isDeviceResponding = false;
+
+        this.startGPSManagement();
+    }
+
+    startGPSManagement() {
+        console.log(`[JIMI GPS Manager] 🚀 Iniciando gestión para ${this.imei}`);
+        this.aggressivePhase();
+    }
+
+    aggressivePhase() {
+        console.log(`[JIMI GPS Manager] ⚡ Fase agresiva - solicitudes cada 15s`);
+
+        let aggressiveCount = 0;
+        const maxAggressive = 6;
+
+        // Primera solicitud inmediata
+        this.requestGPS();
+        aggressiveCount++;
+
+        const aggressiveInterval = setInterval(() => {
+            if (!this.socket || this.socket.destroyed) {
+                clearInterval(aggressiveInterval);
+                return;
+            }
+
+            if (aggressiveCount >= maxAggressive) {
+                clearInterval(aggressiveInterval);
+                this.normalPhase();
+                return;
+            }
+
+            this.requestGPS();
+            aggressiveCount++;
+        }, 15000);
+    }
+
+    normalPhase() {
+        console.log(`[JIMI GPS Manager] 🔄 Fase normal - solicitudes cada 60s`);
+
+        this.requestInterval = setInterval(() => {
+            if (!this.socket || this.socket.destroyed) {
+                this.cleanup();
+                return;
+            }
+
+            const timeSinceLastGPS = this.lastGPSReceived ?
+                Date.now() - this.lastGPSReceived.getTime() : null;
+
+            if (!timeSinceLastGPS || timeSinceLastGPS > 90000) {
+                this.requestGPS();
+            } else {
+                console.log(`[JIMI GPS Manager] ✅ Dispositivo respondiendo automáticamente`);
+                this.isDeviceResponding = true;
+            }
+        }, 60000);
+    }
+
+    requestGPS() {
+        try {
+            const buffer = Buffer.alloc(10);
+
+            buffer.writeUInt16BE(0x7878, 0);
+            buffer.writeUInt8(0x05, 2);
+            buffer.writeUInt8(0x80, 3);
+            buffer.writeUInt16BE(this.serialCounter++, 4);
+
+            const dataForCRC = buffer.slice(2, 6);
+            const crc = calculateJimiCRC16(dataForCRC);
+            buffer.writeUInt16BE(crc, 6);
+            buffer.writeUInt16BE(0x0D0A, 8);
+
+            this.socket.write(buffer);
+            console.log(`[JIMI GPS Manager] 📍 Solicitando GPS (Serial: ${this.serialCounter - 1})`);
+
+        } catch (error) {
+            console.error(`[JIMI GPS Manager] Error solicitando GPS:`, error);
+        }
+    }
+
+    onGPSReceived() {
+        this.lastGPSReceived = new Date();
+        console.log(`[JIMI GPS Manager] 📍 GPS recibido para ${this.imei}`);
+
+        if (this.isDeviceResponding && this.requestInterval) {
+            clearInterval(this.requestInterval);
+            this.reducedPhase();
+        }
+    }
+
+    reducedPhase() {
+        console.log(`[JIMI GPS Manager] 😴 Fase reducida - solicitudes cada 5 minutos`);
+
+        this.requestInterval = setInterval(() => {
+            if (!this.socket || this.socket.destroyed) {
+                this.cleanup();
+                return;
+            }
+
+            const timeSinceLastGPS = this.lastGPSReceived ?
+                Date.now() - this.lastGPSReceived.getTime() : null;
+
+            if (!timeSinceLastGPS || timeSinceLastGPS > 300000) {
+                this.requestGPS();
+            }
+        }, 300000);
+    }
+
+    cleanup() {
+        if (this.requestInterval) {
+            clearInterval(this.requestInterval);
+            this.requestInterval = null;
+        }
+        console.log(`[JIMI GPS Manager] 🧹 Limpieza completada para ${this.imei}`);
+    }
+}
+
+/**
  * Crea respuesta ACK específica para LOGIN según documentación
  */
 function createLoginACK(serialNumber) {
@@ -351,9 +545,61 @@ function processGPSLocationPacket(buffer, protocolNumber) {
 }
 
 /**
+ * Procesa protocolo 0x7D - Información general del dispositivo - AGREGADO
+ */
+function processGeneralInfo(buffer) {
+    try {
+        console.log('[JIMI LL301] 📊 Procesando información general (0x7D)');
+
+        const payload = buffer.slice(4, buffer.length - 6);
+        const infoString = payload.toString('ascii');
+
+        console.log('[JIMI LL301] 📋 Info:', infoString.substring(0, 100) + '...');
+
+        const serialNumber = buffer.readUInt16BE(buffer.length - 6);
+
+        return {
+            type: 'device_info',
+            infoString: infoString,
+            serialNumber: serialNumber,
+            needsACK: true,
+            protocolNumber: 0x7D
+        };
+
+    } catch (error) {
+        console.error('[JIMI LL301] Error procesando info general:', error);
+        return null;
+    }
+}
+
+/**
+ * Procesa protocolo 0x20 - Estado del dispositivo - AGREGADO
+ */
+function processDeviceStatus(buffer) {
+    try {
+        console.log('[JIMI LL301] 📈 Procesando estado del dispositivo (0x20)');
+
+        const serialNumber = buffer.readUInt16BE(buffer.length - 6);
+
+        return {
+            type: 'device_status',
+            serialNumber: serialNumber,
+            needsACK: true,
+            protocolNumber: 0x20
+        };
+
+    } catch (error) {
+        console.error('[JIMI LL301] Error procesando estado:', error);
+        return null;
+    }
+}
+
+/**
  * Función principal mejorada para procesar datos Jimi IoT LL301
  */
 export function processJimiIoTDataImproved(rawData, port, socket, clients) {
+    let imei = null; // AGREGADO para logging
+
     try {
         const hexData = rawData.toString('hex').toUpperCase();
         console.log(`[JIMI LL301] 📡 Datos recibidos (${rawData.length} bytes):`, hexData);
@@ -398,22 +644,27 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
         switch (protocolNumber) {
             case JIMI_COMMANDS.LOGIN:
                 parsedData = processLoginPacket(rawData);
+                imei = parsedData.imei; // AGREGADO para logging
+
+                // AGREGADO: Iniciar sesión de logging
+                jimiLogger.startSession(imei, socket);
+                jimiLogger.logPacket(imei, protocolNumber, rawData.length, true);
+                socket.imei = imei; // AGREGADO para tracking
 
                 // Enviar ACK de login
                 const loginACK = createJimiACK(JIMI_COMMANDS.LOGIN, parsedData.serialNumber, true);
                 socket.write(loginACK);
                 console.log(`[JIMI LL301] ✅ ACK Login enviado: ${loginACK.toString('hex').toUpperCase()}`);
 
-                // NUEVA ESTRATEGIA: Solo responder, NO enviar comandos automáticamente
-                // Según documentación: "After the GPS module is positioned and the connection is 
-                // established, the terminal will upload data about fixes by preset rules"
+                // AGREGADO: Configurar GPS manager inteligente
                 setTimeout(() => {
-                    console.log('[JIMI LL301] ✅ Login completado. Esperando datos automáticos del dispositivo...');
-                    waitForAutomaticGPSData(socket, parsedData.imei);
-                }, 1000);
+                    socket.gpsManager = new JimiGPSManager(socket, imei, parsedData.serialNumber);
+                    console.log('[JIMI LL301] ✅ Login completado. GPS Manager configurado.');
+                }, 2000);
                 break;
 
             case 0x8A: // Time calibration REQUEST from device
+                imei = socket.imei || 'unknown'; // AGREGADO
                 console.log('[JIMI LL301] 🕐 Dispositivo solicita calibración de tiempo');
 
                 // Responder con tiempo UTC según documentación
@@ -447,6 +698,8 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
 
             case JIMI_COMMANDS.HEARTBEAT_STATUS:
             case JIMI_COMMANDS.HEARTBEAT:
+                imei = socket.imei || 'unknown'; // AGREGADO
+                jimiLogger.logPacket(imei, protocolNumber, rawData.length, true); // AGREGADO
                 console.log(`[JIMI LL301] 💓 Heartbeat recibido (0x${protocolNumber.toString(16)})`);
 
                 // Enviar ACK
@@ -457,15 +710,54 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
 
             case JIMI_COMMANDS.GPS_LOCATION_2G:
             case JIMI_COMMANDS.GPS_LOCATION_4G:
+                imei = socket.imei || 'unknown'; // AGREGADO
                 parsedData = processGPSLocationPacket(rawData, protocolNumber);
 
-                // Emitir datos GPS si son válidos
+                // AGREGADO: Logging de GPS
+                jimiLogger.logPacket(imei, protocolNumber, rawData.length, parsedData?.valid);
+                if (parsedData) {
+                    jimiLogger.logGPSData(imei, parsedData.latitude, parsedData.longitude,
+                        parsedData.valid, parsedData.satellites);
+
+                    // AGREGADO: Notificar al GPS manager
+                    if (socket.gpsManager) {
+                        socket.gpsManager.onGPSReceived();
+                    }
+                }
+
+                // Emitir datos GPS si son válidos - MODIFICADO formato
                 if (parsedData && parsedData.valid) {
                     emitGPSData(parsedData, port, clients);
                 }
                 break;
 
+            case 0x7D: // AGREGADO: General info
+                imei = socket.imei || 'unknown';
+                parsedData = processGeneralInfo(rawData);
+                jimiLogger.logPacket(imei, protocolNumber, rawData.length, !!parsedData);
+
+                console.log(`[JIMI LL301] 📊 Info general de ${imei}`);
+
+                const infoACK = createJimiACK(0x7D, rawData.readUInt16BE(rawData.length - 6));
+                socket.write(infoACK);
+                console.log(`[JIMI LL301] ✅ Info ACK enviado: ${infoACK.toString('hex').toUpperCase()}`);
+                break;
+
+            case 0x20: // AGREGADO: Device status
+                imei = socket.imei || 'unknown';
+                parsedData = processDeviceStatus(rawData);
+                jimiLogger.logPacket(imei, protocolNumber, rawData.length, !!parsedData);
+
+                console.log(`[JIMI LL301] 📈 Estado de ${imei}`);
+
+                const statusACK = createJimiACK(0x20, rawData.readUInt16BE(rawData.length - 6));
+                socket.write(statusACK);
+                console.log(`[JIMI LL301] ✅ Status ACK enviado: ${statusACK.toString('hex').toUpperCase()}`);
+                break;
+
             default:
+                imei = socket.imei || 'unknown'; // AGREGADO
+                jimiLogger.logPacket(imei, protocolNumber, rawData.length, false); // AGREGADO
                 console.log(`[JIMI LL301] 📦 Protocolo no manejado: 0x${protocolNumber.toString(16)}`);
                 console.log(`[JIMI LL301] 📦 Datos completos: ${hexData}`);
 
@@ -479,34 +771,37 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
         }
 
     } catch (error) {
-        console.error('[JIMI LL301] Error procesando datos:', error.message);
+        if (imei) { // AGREGADO: mejor logging de errores
+            console.error(`[JIMI LL301] ❌ Error para ${imei}:`, error.message);
+        } else {
+            console.error('[JIMI LL301] Error procesando datos:', error.message);
+        }
     }
 }
 
 /**
- * Emite datos GPS a los clientes WebSocket
+ * Emite datos GPS a los clientes WebSocket - MODIFICADO formato
  */
 function emitGPSData(parsedData, port, clients) {
+    // MODIFICADO: Ajustar timestamp restando 6 horas (UTC-6 para México)
+    const utcTimestamp = new Date(parsedData.timestamp);
+    const localTimestamp = new Date(utcTimestamp.getTime() - (6 * 60 * 60 * 1000));
+
+    // MODIFICADO: Formato específico solicitado
     const dataToEmit = {
+        timestamp: localTimestamp.toISOString(), // UTC-6
+        latitude: parsedData.latitude,           // Por separado
+        longitude: parsedData.longitude,         // Por separado  
+        speed: parsedData.speed,                 // Por separado
+        course: parsedData.course,               // Por separado
+        satellites: parsedData.satellites,       // Por separado
+        positioned: parsedData.positioned,       // Por separado
         imei: parsedData.imei || 'jimi_ll301',
-        lat: parsedData.latitude,
-        lng: parsedData.longitude,
-        timestamp: parsedData.timestamp,
-        speed: parsedData.speed,
-        altitude: 0, // No disponible en este protocolo
-        angle: parsedData.course,
-        satellites: parsedData.satellites,
-        hdop: null,
-        deviceno: "",
-        carlicense: "",
-        additionalData: {
-            protocol: 'jimi_iot_ll301',
-            protocolNumber: `0x${parsedData.protocolNumber.toString(16)}`,
-            serialNumber: parsedData.serialNumber,
-            positioned: parsedData.positioned,
-            gpsRealTime: parsedData.gpsRealTime,
-            cellInfo: parsedData.cellInfo
-        },
+        valid: parsedData.valid,
+        protocolNumber: `0x${parsedData.protocolNumber.toString(16)}`,
+        serialNumber: parsedData.serialNumber,
+        gpsRealTime: parsedData.gpsRealTime,
+        cellInfo: parsedData.cellInfo,
         source_port: port
     };
 
@@ -516,7 +811,7 @@ function emitGPSData(parsedData, port, clients) {
         if (client.readyState === 1 && info.authenticated) {
             try {
                 client.send(JSON.stringify({
-                    type: 'gps-data',
+                    type: 'jimi-data',  // MODIFICADO: Cambió de 'gps-data' a 'jimi-data'
                     data: dataToEmit
                 }));
                 clientsSent++;
@@ -528,3 +823,6 @@ function emitGPSData(parsedData, port, clients) {
 
     console.log(`[JIMI LL301] 🌍 Datos GPS enviados a ${clientsSent} clientes WebSocket - Lat: ${parsedData.latitude}, Lng: ${parsedData.longitude}`);
 }
+
+// AGREGADO: Exportar logger y GPS manager para uso en index.js
+export { jimiLogger, JimiGPSManager };
