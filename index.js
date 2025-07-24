@@ -10,7 +10,7 @@ import { router_admin } from './routes/admin.js';
 import { router_artemis } from './routes/artemis.js';
 import { handlePacketResponse } from './controller/ruptela-ack.js';
 // Importar las funciones del parser Jimi IoT
-import { parseJimiIoTPacket, handleJimiIoTResponse, processJimiIoTDataImproved } from './utils/jimi-iot-parser.js';
+import { processJimiIoTDataImproved } from './utils/jimi-iot-parser.js';
 
 dotenv.config();
 
