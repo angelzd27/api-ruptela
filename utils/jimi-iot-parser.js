@@ -80,34 +80,22 @@ function createJimiACK(protocolNumber, serialNumber, isPositive = true) {
 }
 
 /**
- * Envía comando de solicitud de ubicación GPS
+ * NO enviar comandos GPS automáticamente - según documentación,
+ * el dispositivo debe enviar datos automáticamente después del login
  */
-function requestGPSLocation(socket, serialNumber = 1) {
-    const buffer = Buffer.alloc(10);
+function waitForAutomaticGPSData(socket, imei) {
+    console.log(`[JIMI LL301] ⏳ Esperando datos GPS automáticos del dispositivo ${imei}`);
 
-    // Start flag
-    buffer.writeUInt16BE(0x7878, 0);
+    // Solo configurar un heartbeat periódico muy básico
+    const heartbeatInterval = setInterval(() => {
+        if (socket && !socket.destroyed) {
+            console.log(`[JIMI LL301] 💓 Conexión activa para ${imei}`);
+        } else {
+            clearInterval(heartbeatInterval);
+        }
+    }, 60000); // Cada minuto
 
-    // Length
-    buffer.writeUInt8(0x05, 2);
-
-    // Protocol 0x80 - Online command (según documentación)
-    buffer.writeUInt8(JIMI_COMMANDS.ONLINE_COMMAND, 3);
-
-    // Serial number
-    buffer.writeUInt16BE(serialNumber, 4);
-
-    // CRC
-    const dataForCRC = buffer.slice(2, 6);
-    const crc = calculateJimiCRC16(dataForCRC);
-    buffer.writeUInt16BE(crc, 6);
-
-    // End flag
-    buffer.writeUInt16BE(0x0D0A, 8);
-
-    socket.write(buffer);
-    console.log(`[JIMI LL301] 📍 Solicitando ubicación GPS - Buffer: ${buffer.toString('hex').toUpperCase()}`);
-    return true;
+    return heartbeatInterval;
 }
 
 /**
@@ -343,6 +331,7 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
 
         let parsedData;
 
+        // Agregar más protocolos específicos del LL301
         switch (protocolNumber) {
             case JIMI_COMMANDS.LOGIN:
                 parsedData = processLoginPacket(rawData);
@@ -352,32 +341,17 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
                 socket.write(loginACK);
                 console.log(`[JIMI LL301] ✅ ACK Login enviado: ${loginACK.toString('hex').toUpperCase()}`);
 
-                // SECUENCIA CRÍTICA: Configuración post-login según documentación
+                // NUEVA ESTRATEGIA: Solo responder, NO enviar comandos automáticamente
+                // Según documentación: "After the GPS module is positioned and the connection is 
+                // established, the terminal will upload data about fixes by preset rules"
                 setTimeout(() => {
-                    console.log('[JIMI LL301] 🚀 Iniciando secuencia de configuración post-login...');
-
-                    // 1. NO enviar calibración automáticamente - esperar que el dispositivo la solicite
-                    // sendTimeCalibration(socket, parsedData.serialNumber + 1);
-
-                    // 2. Solicitar ubicación GPS cada 15 segundos (más frecuente)
-                    const locationInterval = setInterval(() => {
-                        if (socket && !socket.destroyed) {
-                            requestGPSLocation(socket, parsedData.serialNumber + Math.floor(Math.random() * 100));
-                        } else {
-                            clearInterval(locationInterval);
-                        }
-                    }, 15000);
-
-                    // 3. Solicitud inicial inmediata
-                    setTimeout(() => {
-                        requestGPSLocation(socket, parsedData.serialNumber + 2);
-                    }, 5000);
-
-                }, 1000); // Reducir delay inicial
+                    console.log('[JIMI LL301] ✅ Login completado. Esperando datos automáticos del dispositivo...');
+                    waitForAutomaticGPSData(socket, parsedData.imei);
+                }, 1000);
                 break;
 
-            case JIMI_COMMANDS.TIME_CALIBRATION:
-                console.log('[JIMI LL301] 🕐 Time calibration request recibido');
+            case 0x8A: // Time calibration REQUEST from device
+                console.log('[JIMI LL301] 🕐 Dispositivo solicita calibración de tiempo');
 
                 // Responder con tiempo UTC según documentación
                 const timeBuffer = Buffer.alloc(16);
@@ -401,21 +375,21 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
                 timeBuffer.writeUInt16BE(0x0D0A, 14);
 
                 socket.write(timeBuffer);
-                console.log(`[JIMI LL301] ✅ Respuesta de tiempo enviada: ${timeBuffer.toString('hex').toUpperCase()}`);
+                console.log(`[JIMI LL301] ✅ Calibración de tiempo enviada: ${timeBuffer.toString('hex').toUpperCase()}`);
+                break;
+
+            case JIMI_COMMANDS.TIME_CALIBRATION:
+                // Este caso ya no se necesita porque lo manejamos arriba
                 break;
 
             case JIMI_COMMANDS.HEARTBEAT_STATUS:
             case JIMI_COMMANDS.HEARTBEAT:
-                console.log('[JIMI LL301] 💓 Heartbeat recibido');
+                console.log(`[JIMI LL301] 💓 Heartbeat recibido (0x${protocolNumber.toString(16)})`);
 
                 // Enviar ACK
                 const heartbeatACK = createJimiACK(protocolNumber, rawData.readUInt16BE(rawData.length - 6));
                 socket.write(heartbeatACK);
-
-                // Aprovechar heartbeat para solicitar ubicación
-                setTimeout(() => {
-                    requestGPSLocation(socket, rawData.readUInt16BE(rawData.length - 6) + 1);
-                }, 1000);
+                console.log(`[JIMI LL301] ✅ Heartbeat ACK enviado: ${heartbeatACK.toString('hex').toUpperCase()}`);
                 break;
 
             case JIMI_COMMANDS.GPS_LOCATION_2G:
