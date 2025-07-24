@@ -31,7 +31,12 @@ function calculateJimiCRC16(data) {
     const crctab16 = [
         0x0000, 0x1189, 0x2312, 0x329B, 0x4624, 0x57AD, 0x6536, 0x74BF,
         0x8C48, 0x9DC1, 0xAF5A, 0xBED3, 0xCA6C, 0xDBE5, 0xE97E, 0xF8F7,
-        // ... (tabla completa del documento)
+        0x1081, 0x0108, 0x3393, 0x221A, 0x56A5, 0x472C, 0x75B7, 0x643E,
+        0x9CC9, 0x8D40, 0xBFDB, 0xAE52, 0xDAED, 0xCB64, 0xF9FF, 0xE876,
+        0x2102, 0x308B, 0x0210, 0x1399, 0x6726, 0x76AF, 0x4434, 0x55BD,
+        0xAD4A, 0xBCC3, 0x8E58, 0x9FD1, 0xEB6E, 0xFAE7, 0xC87C, 0xD9F5,
+        0x3183, 0x200A, 0x1291, 0x0318, 0x77A7, 0x662E, 0x54B5, 0x453C,
+        0xBDCB, 0xAC42, 0x9ED9, 0x8F50, 0xFBEF, 0xEA66, 0xD8FD, 0xC974
     ];
 
     let fcs = 0xFFFF;
@@ -53,15 +58,15 @@ function createJimiACK(protocolNumber, serialNumber, isPositive = true) {
     // Length (5 bytes de datos)
     buffer.writeUInt8(0x05, 2);
 
-    // Protocol number (mismo que recibido)
-    buffer.writeUInt8(protocolNumber, 3);
-
-    // Información específica según el protocolo
+    // Protocol number (mismo que recibido para LOGIN, otros usan número específico)
     if (protocolNumber === JIMI_COMMANDS.LOGIN) {
-        buffer.writeUInt8(isPositive ? 0x01 : 0x00, 4);
+        buffer.writeUInt8(0x01, 3); // Respuesta de login usa 0x01
     } else {
-        buffer.writeUInt16BE(serialNumber, 4);
+        buffer.writeUInt8(protocolNumber, 3);
     }
+
+    // Serial number - SIEMPRE usar el serial number recibido
+    buffer.writeUInt16BE(serialNumber, 4);
 
     // Calcular CRC16
     const dataForCRC = buffer.slice(2, 6);
@@ -306,7 +311,7 @@ function processGPSLocationPacket(buffer, protocolNumber) {
 /**
  * Función principal mejorada para procesar datos Jimi IoT LL301
  */
-export function processJimiIoTDataImproved(rawData, port, socket) {
+export function processJimiIoTDataImproved(rawData, port, socket, clients) {
     try {
         const hexData = rawData.toString('hex').toUpperCase();
         console.log(`[JIMI LL301] 📡 Datos recibidos (${rawData.length} bytes):`, hexData);
@@ -351,30 +356,52 @@ export function processJimiIoTDataImproved(rawData, port, socket) {
                 setTimeout(() => {
                     console.log('[JIMI LL301] 🚀 Iniciando secuencia de configuración post-login...');
 
-                    // 1. Calibración de tiempo (OBLIGATORIO según documentación)
-                    sendTimeCalibration(socket, parsedData.serialNumber + 1);
+                    // 1. NO enviar calibración automáticamente - esperar que el dispositivo la solicite
+                    // sendTimeCalibration(socket, parsedData.serialNumber + 1);
 
-                    // 2. Solicitar ubicación GPS cada 30 segundos
+                    // 2. Solicitar ubicación GPS cada 15 segundos (más frecuente)
                     const locationInterval = setInterval(() => {
                         if (socket && !socket.destroyed) {
                             requestGPSLocation(socket, parsedData.serialNumber + Math.floor(Math.random() * 100));
                         } else {
                             clearInterval(locationInterval);
                         }
-                    }, 30000);
+                    }, 15000);
 
                     // 3. Solicitud inicial inmediata
                     setTimeout(() => {
                         requestGPSLocation(socket, parsedData.serialNumber + 2);
-                    }, 3000);
+                    }, 5000);
 
-                }, 2000);
+                }, 1000); // Reducir delay inicial
                 break;
 
             case JIMI_COMMANDS.TIME_CALIBRATION:
                 console.log('[JIMI LL301] 🕐 Time calibration request recibido');
-                // El dispositivo solicita calibración - responder con tiempo actual
-                sendTimeCalibration(socket, rawData.readUInt16BE(rawData.length - 6));
+
+                // Responder con tiempo UTC según documentación
+                const timeBuffer = Buffer.alloc(16);
+                timeBuffer.writeUInt16BE(0x7878, 0);
+                timeBuffer.writeUInt8(0x0B, 2);
+                timeBuffer.writeUInt8(0x8A, 3); // UTC response
+
+                const now = new Date();
+                timeBuffer.writeUInt8(now.getFullYear() - 2000, 4);
+                timeBuffer.writeUInt8(now.getMonth() + 1, 5);
+                timeBuffer.writeUInt8(now.getDate(), 6);
+                timeBuffer.writeUInt8(now.getHours(), 7);
+                timeBuffer.writeUInt8(now.getMinutes(), 8);
+                timeBuffer.writeUInt8(now.getSeconds(), 9);
+
+                const timeSerial = rawData.readUInt16BE(rawData.length - 6);
+                timeBuffer.writeUInt16BE(timeSerial, 10);
+
+                const timeCRC = calculateJimiCRC16(timeBuffer.slice(2, 12));
+                timeBuffer.writeUInt16BE(timeCRC, 12);
+                timeBuffer.writeUInt16BE(0x0D0A, 14);
+
+                socket.write(timeBuffer);
+                console.log(`[JIMI LL301] ✅ Respuesta de tiempo enviada: ${timeBuffer.toString('hex').toUpperCase()}`);
                 break;
 
             case JIMI_COMMANDS.HEARTBEAT_STATUS:
@@ -397,16 +424,20 @@ export function processJimiIoTDataImproved(rawData, port, socket) {
 
                 // Emitir datos GPS si son válidos
                 if (parsedData && parsedData.valid) {
-                    emitGPSData(parsedData, port);
+                    emitGPSData(parsedData, port, clients);
                 }
                 break;
 
             default:
                 console.log(`[JIMI LL301] 📦 Protocolo no manejado: 0x${protocolNumber.toString(16)}`);
+                console.log(`[JIMI LL301] 📦 Datos completos: ${hexData}`);
 
-                // Enviar ACK genérico
-                const genericACK = createJimiACK(protocolNumber, rawData.readUInt16BE(rawData.length - 6));
-                socket.write(genericACK);
+                // Solo enviar ACK genérico si no es un comando que no requiere respuesta
+                if (protocolNumber !== 0x13 && protocolNumber !== 0x12 && protocolNumber !== 0x16) {
+                    const genericACK = createJimiACK(protocolNumber, rawData.readUInt16BE(rawData.length - 6));
+                    socket.write(genericACK);
+                    console.log(`[JIMI LL301] ✅ ACK genérico enviado: ${genericACK.toString('hex').toUpperCase()}`);
+                }
                 break;
         }
 
@@ -418,7 +449,7 @@ export function processJimiIoTDataImproved(rawData, port, socket) {
 /**
  * Emite datos GPS a los clientes WebSocket
  */
-function emitGPSData(parsedData, port) {
+function emitGPSData(parsedData, port, clients) {
     const dataToEmit = {
         imei: parsedData.imei || 'jimi_ll301',
         lat: parsedData.latitude,
@@ -442,16 +473,21 @@ function emitGPSData(parsedData, port) {
         source_port: port
     };
 
-    // Aquí conectar con tu sistema de emisión WebSocket existente
-    console.log(`[JIMI LL301] 🌍 Datos GPS listos para emisión:`, dataToEmit);
+    // Emitir a clientes WebSocket autenticados
+    let clientsSent = 0;
+    for (const [client, info] of clients.entries()) {
+        if (client.readyState === 1 && info.authenticated) {
+            try {
+                client.send(JSON.stringify({
+                    type: 'gps-data',
+                    data: dataToEmit
+                }));
+                clientsSent++;
+            } catch (wsError) {
+                console.error(`[JIMI LL301] Error enviando a WebSocket:`, wsError.message);
+            }
+        }
+    }
 
-    // Integrar con tu código existente:
-    // for (const [client, info] of clients.entries()) {
-    //     if (client.readyState === 1 && info.authenticated) {
-    //         client.send(JSON.stringify({
-    //             type: 'gps-data',
-    //             data: dataToEmit
-    //         }));
-    //     }
-    // }
+    console.log(`[JIMI LL301] 🌍 Datos GPS enviados a ${clientsSent} clientes WebSocket - Lat: ${parsedData.latitude}, Lng: ${parsedData.longitude}`);
 }
