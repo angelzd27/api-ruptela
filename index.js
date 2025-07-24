@@ -10,7 +10,7 @@ import { router_admin } from './routes/admin.js';
 import { router_artemis } from './routes/artemis.js';
 import { handlePacketResponse } from './controller/ruptela-ack.js';
 // Importar las funciones del parser Jimi IoT
-import { parseJimiIoTPacket, handleJimiIoTResponse } from './utils/jimi-iot-parser.js';
+import { parseJimiIoTPacket, handleJimiIoTResponse, processJimiIoTDataImproved } from './utils/jimi-iot-parser.js';
 
 dotenv.config();
 
@@ -882,7 +882,7 @@ function createTcpServer(port, serverName) {
             // Mostrar datos recibidos según el puerto (solo Puerto 7000 para Jimi IoT)
             if (port === TCP_PORT_3) {
                 // Para el puerto 7000 (Jimi IoT), procesar directamente
-                processJimiIoTData(data, port, socket);
+                processJimiIoTDataImproved(data, port, socket);
                 return; // No continuar con el procesamiento de Ruptela
             } else if (port === TCP_PORT_2) {
                 // console.log(`[${serverName}] Datos recibidos (${data.length} bytes):`, data.toString('hex').toUpperCase());
