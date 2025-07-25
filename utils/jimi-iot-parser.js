@@ -727,7 +727,7 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
 
                 // Emitir datos GPS si son válidos - MODIFICADO formato
                 if (parsedData && parsedData.valid) {
-                    emitGPSData(parsedData, port, clients);
+                    emitGPSData(parsedData, port, clients, socket);  // 🔧 AGREGADO: socket parameter
                 }
                 break;
 
@@ -780,9 +780,9 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
 }
 
 /**
- * Emite datos GPS a los clientes WebSocket - MODIFICADO formato
+ * Emite datos GPS a los clientes WebSocket - MODIFICADO formato - CORREGIDO IMEI
  */
-function emitGPSData(parsedData, port, clients) {
+function emitGPSData(parsedData, port, clients, socket) {  // 🔧 AGREGADO: socket parameter
     // MODIFICADO: Ajustar timestamp restando 6 horas (UTC-6 para México)
     const utcTimestamp = new Date(parsedData.timestamp);
     const localTimestamp = new Date(utcTimestamp.getTime() - (6 * 60 * 60 * 1000));
@@ -796,7 +796,7 @@ function emitGPSData(parsedData, port, clients) {
         course: parsedData.course,               // Por separado
         satellites: parsedData.satellites,       // Por separado
         positioned: parsedData.positioned,       // Por separado
-        imei: parsedData.imei || 'jimi_ll301',
+        imei: socket.imei || parsedData.imei || 'jimi_ll301',  // 🔧 CORREGIDO: Usar socket.imei primero
         valid: parsedData.valid,
         protocolNumber: `0x${parsedData.protocolNumber.toString(16)}`,
         serialNumber: parsedData.serialNumber,
