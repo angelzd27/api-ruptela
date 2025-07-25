@@ -386,9 +386,6 @@ function sendTimeCalibration(socket, serialNumber = 1) {
     return true;
 }
 
-/**
- * Procesa paquete de login según documentación
- */
 function processLoginPacket(buffer) {
     console.log('[JIMI LL301] 🔐 Procesando LOGIN packet según documentación');
 
@@ -403,6 +400,11 @@ function processLoginPacket(buffer) {
         const low = byte & 0x0F;
         if (high <= 9) imei += high.toString();
         if (low <= 9) imei += low.toString();
+    }
+
+    // 🔧 CORREGIR IMEI: Quitar el 0 inicial si existe
+    if (imei.startsWith('0') && imei.length === 16) {
+        imei = imei.substring(1); // Quitar el primer 0
     }
 
     // Type Identifier (2 bytes)
@@ -710,22 +712,19 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
 
             case JIMI_COMMANDS.GPS_LOCATION_2G:
             case JIMI_COMMANDS.GPS_LOCATION_4G:
-                imei = socket.imei || 'unknown'; // AGREGADO
+                imei = socket.imei || 'unknown';
                 parsedData = processGPSLocationPacket(rawData, protocolNumber);
 
-                // AGREGADO: Logging de GPS
                 jimiLogger.logPacket(imei, protocolNumber, rawData.length, parsedData?.valid);
                 if (parsedData) {
                     jimiLogger.logGPSData(imei, parsedData.latitude, parsedData.longitude,
                         parsedData.valid, parsedData.satellites);
 
-                    // AGREGADO: Notificar al GPS manager
                     if (socket.gpsManager) {
                         socket.gpsManager.onGPSReceived();
                     }
                 }
 
-                // Emitir datos GPS si son válidos - MODIFICADO formato
                 if (parsedData && parsedData.valid) {
                     emitGPSData(parsedData, port, clients, socket);  // 🔧 AGREGADO: socket parameter
                 }
@@ -780,23 +779,23 @@ export function processJimiIoTDataImproved(rawData, port, socket, clients) {
 }
 
 /**
- * Emite datos GPS a los clientes WebSocket - MODIFICADO formato - CORREGIDO IMEI
+ * Emite datos GPS a los clientes WebSocket - CORREGIDO TIMESTAMP
  */
-function emitGPSData(parsedData, port, clients, socket) {  // 🔧 AGREGADO: socket parameter
-    // MODIFICADO: Ajustar timestamp restando 6 horas (UTC-6 para México)
-    const utcTimestamp = new Date(parsedData.timestamp);
-    const localTimestamp = new Date(utcTimestamp.getTime() - (6 * 60 * 60 * 1000));
+function emitGPSData(parsedData, port, clients, socket) {
+    // 🔧 CORREGIDO: Usar hora actual de México (UTC-6) en lugar del timestamp del GPS
+    const now = new Date();
+    const mexicoTime = new Date(now.getTime() - (6 * 60 * 60 * 1000));
 
     // MODIFICADO: Formato específico solicitado
     const dataToEmit = {
-        timestamp: localTimestamp.toISOString(), // UTC-6
-        latitude: parsedData.latitude,           // Por separado
-        longitude: parsedData.longitude,         // Por separado  
-        speed: parsedData.speed,                 // Por separado
-        course: parsedData.course,               // Por separado
-        satellites: parsedData.satellites,       // Por separado
-        positioned: parsedData.positioned,       // Por separado
-        imei: socket.imei || parsedData.imei || 'jimi_ll301',  // 🔧 CORREGIDO: Usar socket.imei primero
+        timestamp: mexicoTime.toISOString(), // 🔧 CORREGIDO: Hora actual México
+        latitude: parsedData.latitude,
+        longitude: parsedData.longitude,
+        speed: parsedData.speed,
+        course: parsedData.course,
+        satellites: parsedData.satellites,
+        positioned: parsedData.positioned,
+        imei: socket.imei || parsedData.imei || 'jimi_ll301',
         valid: parsedData.valid,
         protocolNumber: `0x${parsedData.protocolNumber.toString(16)}`,
         serialNumber: parsedData.serialNumber,
@@ -811,7 +810,7 @@ function emitGPSData(parsedData, port, clients, socket) {  // 🔧 AGREGADO: soc
         if (client.readyState === 1 && info.authenticated) {
             try {
                 client.send(JSON.stringify({
-                    type: 'jimi-data',  // MODIFICADO: Cambió de 'gps-data' a 'jimi-data'
+                    type: 'jimi-data',
                     data: dataToEmit
                 }));
                 clientsSent++;
