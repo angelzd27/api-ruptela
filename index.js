@@ -50,10 +50,10 @@ const gpsDataCache = new Map();
 app.use('/alarm', express.raw({ type: "multipart/form-data", limit: "1mb" }));
 app.post('/alarm', async (request, response) => {
     const bodyText = request.body.toString();
-    const channelName = extractChannelName(bodyText);
-
-    console.log(`Alerta recibida en el canal: ${channelName}`);
     console.log(`Contenido de la alerta: ${bodyText}`);
+
+    const channelName = extractChannelName(bodyText);
+    console.log(`Alerta recibida en el canal: ${channelName}`);
 
     if (!channelName) {
         return response.status(400).json({ error: "No se encontró channelName en la alerta." });
