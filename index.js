@@ -47,6 +47,21 @@ const clients = new Map(); // Map<ws, { authenticated: boolean }>
 // Almacén para los últimos datos por IMEI
 const gpsDataCache = new Map();
 
+app.use('/alarm', express.raw({ type: "multipart/form-data", limit: "1mb" }));
+app.post('/alarm', async (request, response) => {
+    const bodyText = request.body.toString();
+    const channelName = extractChannelName(bodyText);
+
+    console.log(`Alerta recibida en el canal: ${channelName}`);
+    console.log(`Contenido de la alerta: ${bodyText}`);
+
+    if (!channelName) {
+        return response.status(400).json({ error: "No se encontró channelName en la alerta." });
+    }
+
+    response.status(200).json({ msg: 'alert_received', channelName });
+});
+
 // Ruta para recibir los eventos
 app.post('/eventRcv', (req, res) => {
     try {
