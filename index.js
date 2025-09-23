@@ -87,6 +87,11 @@ app.post('/eventRcv', (req, res) => {
     }
 });
 
+function extractChannelName(bodyText) {
+    const match = bodyText.match(/<channelName>(.*?)<\/channelName>/);
+    return match ? match[1].trim() : null;
+}
+
 // Función para limpiar y filtrar datos GPS (para Ruptela)
 function cleanAndFilterGpsData(decodedData) {
     if (!decodedData?.records?.length) return decodedData;
