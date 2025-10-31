@@ -59,6 +59,23 @@ app.post('/alarm', async (request, response) => {
         return response.status(400).json({ error: "No se encontró channelName en la alerta." });
     }
 
+    console.log(`Emitiendo 'panic-button' para el canal: ${channelName}`);
+    
+    for (const [client, info] of clients.entries()) {
+        if (client.readyState === 1 && info.authenticated) {
+            try {
+                client.send(JSON.stringify({
+                    type: 'panic-button',
+                    data: {
+                        channelName: channelName
+                    }
+                }));
+            } catch (error) {
+                console.error('Error al enviar mensaje de pánico a un cliente WebSocket:', error);
+            }
+        }
+    }
+
     response.status(200).json({ msg: 'alert_received', channelName });
 });
 
