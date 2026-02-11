@@ -4,6 +4,7 @@ import net from 'net';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import dotenv from 'dotenv';
+import mqtt from 'mqtt';
 import { parseRuptelaPacketWithExtensions } from './controller/ruptela.js';
 import { decrypt } from './utils/encrypt.js';
 import { router_admin } from './routes/admin.js';
@@ -46,6 +47,68 @@ const clients = new Map(); // Map<ws, { authenticated: boolean }>
 
 // Almacén para los últimos datos por IMEI
 const gpsDataCache = new Map();
+
+const mqttOptions = {
+    host: 'emqx.okip.com.mx',
+    port: 1883,
+    protocol: 'mqtt',
+    clientId: 'backend_okip_01',
+    username: 'prueba',
+    // Se recomienda usar variable de entorno, si no existe usa el string fallback
+    password: process.env.MQTT_PASSWORD || 'TU_PASSWORD_AQUI', 
+    clean: true,
+    connectTimeout: 4000,
+    reconnectPeriod: 1000
+};
+
+// Conexión MQTT
+const mqttClient = mqtt.connect(mqttOptions);
+
+mqttClient.on('connect', () => {
+    console.log('✅ [MQTT] Conectado a EMQX');
+
+    // Suscribirse a topics
+    mqttClient.subscribe('testtopic/#', { qos: 0 }, (err) => {
+        if (err) {
+            console.error('❌ [MQTT] Error al suscribirse:', err);
+        } else {
+            console.log('📥 [MQTT] Suscrito a testtopic/#');
+        }
+    });
+});
+
+mqttClient.on('message', (topic, message) => {
+    const payloadString = message.toString();
+    console.log('📨 [MQTT] Mensaje recibido');
+    console.log('   Topic:', topic);
+    console.log('   Payload:', payloadString);
+
+    let dataToSend;
+    try {
+        dataToSend = JSON.parse(payloadString);
+    } catch (e) {
+        dataToSend = payloadString; // Si no es JSON, mandamos el texto plano
+    }
+
+    for (const [client, info] of clients.entries()) {
+        // Solo enviamos a clientes conectados y autenticados
+        if (client.readyState === 1 && info.authenticated) {
+            try {
+                client.send(JSON.stringify({
+                    type: 'mqtt_message', // Identificador para el frontend
+                    topic: topic,
+                    data: dataToSend
+                }));
+            } catch (err) {
+                console.error('Error enviando mensaje MQTT a WS:', err);
+            }
+        }
+    }
+});
+
+mqttClient.on('error', (error) => {
+    console.error('❌ [MQTT] Error de conexión:', error);
+});
 
 app.use('/alarm', express.raw({ type: "multipart/form-data", limit: "1mb" }));
 app.post('/alarm', async (request, response) => {
@@ -553,6 +616,12 @@ process.on('unhandledRejection', (reason, promise) => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('🔄 Recibida señal SIGTERM, cerrando servidores...');
+
+    if (mqttClient) {
+        console.log('🔌 Cerrando conexión MQTT...');
+        mqttClient.end();
+    }
+
     tcpServer1.close(() => {
         tcpServer2.close(() => {
             tcpServer3.close(() => {
@@ -568,6 +637,12 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
     console.log('🔄 Recibida señal SIGINT, cerrando servidores...');
+
+    if (mqttClient) {
+        console.log('🔌 Cerrando conexión MQTT...');
+        mqttClient.end();
+    }
+
     tcpServer1.close(() => {
         tcpServer2.close(() => {
             tcpServer3.close(() => {
