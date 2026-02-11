@@ -167,6 +167,13 @@ app.post('/eventRcv', (req, res) => {
     }
 });
 
+app.post('/bosch', (req, res) => {
+    const body = req.body;
+    console.log(`Contenido del evento Bosch: ${body}`);
+
+    res.status(200).json({ msg: 'bosch_event_received' });
+})
+
 function extractChannelName(bodyText) {
     const match = bodyText.match(/<channelName>(.*?)<\/channelName>/);
     return match ? match[1].trim() : null;
