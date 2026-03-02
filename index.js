@@ -4,7 +4,6 @@ import net from 'net';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import dotenv from 'dotenv';
-import mqtt from 'mqtt';
 import { parseRuptelaPacketWithExtensions } from './controller/ruptela.js';
 import { decrypt } from './utils/encrypt.js';
 import { router_admin } from './routes/admin.js';
@@ -19,7 +18,6 @@ const PORT = 5000;
 const TCP_PORT = 6000;
 const TCP_PORT_2 = 6001; // Ruptela ECO5 Lite
 const TCP_PORT_3 = 7000; // Jimi IoT LL301
-const TCP_PORT_4 = 7001; // Bolide
 const GETCORS = process.env.CORS;
 
 // Configuración de CORS
@@ -48,68 +46,6 @@ const clients = new Map(); // Map<ws, { authenticated: boolean }>
 // Almacén para los últimos datos por IMEI
 const gpsDataCache = new Map();
 
-const mqttOptions = {
-    host: 'emqx.okip.com.mx',
-    port: 1883,
-    protocol: 'mqtt',
-    clientId: 'backend_okip_01',
-    username: 'prueba',
-    // Se recomienda usar variable de entorno, si no existe usa el string fallback
-    password: process.env.MQTT_PASSWORD || 'TU_PASSWORD_AQUI', 
-    clean: true,
-    connectTimeout: 4000,
-    reconnectPeriod: 1000
-};
-
-// Conexión MQTT
-const mqttClient = mqtt.connect(mqttOptions);
-
-mqttClient.on('connect', () => {
-    console.log('✅ [MQTT] Conectado a EMQX');
-
-    // Suscribirse a topics
-    mqttClient.subscribe('testtopic/#', { qos: 0 }, (err) => {
-        if (err) {
-            console.error('❌ [MQTT] Error al suscribirse:', err);
-        } else {
-            console.log('📥 [MQTT] Suscrito a testtopic/#');
-        }
-    });
-});
-
-mqttClient.on('message', (topic, message) => {
-    const payloadString = message.toString();
-    console.log('📨 [MQTT] Mensaje recibido');
-    console.log('   Topic:', topic);
-    console.log('   Payload:', payloadString);
-
-    let dataToSend;
-    try {
-        dataToSend = JSON.parse(payloadString);
-    } catch (e) {
-        dataToSend = payloadString; // Si no es JSON, mandamos el texto plano
-    }
-
-    for (const [client, info] of clients.entries()) {
-        // Solo enviamos a clientes conectados y autenticados
-        if (client.readyState === 1 && info.authenticated) {
-            try {
-                client.send(JSON.stringify({
-                    type: 'mqtt_message', // Identificador para el frontend
-                    topic: topic,
-                    data: dataToSend
-                }));
-            } catch (err) {
-                console.error('Error enviando mensaje MQTT a WS:', err);
-            }
-        }
-    }
-});
-
-mqttClient.on('error', (error) => {
-    console.error('❌ [MQTT] Error de conexión:', error);
-});
-
 app.use('/alarm', express.raw({ type: "multipart/form-data", limit: "1mb" }));
 app.post('/alarm', async (request, response) => {
     const bodyText = request.body.toString();
@@ -123,7 +59,7 @@ app.post('/alarm', async (request, response) => {
     }
 
     console.log(`Emitiendo 'panic-button' para el canal: ${channelName}`);
-
+    
     for (const [client, info] of clients.entries()) {
         if (client.readyState === 1 && info.authenticated) {
             try {
@@ -458,14 +394,6 @@ function createTcpServer(port, serverName) {
                 return;
             }
 
-            if (port === TCP_PORT_4) {
-                console.log('Raw data received on Bolide port:', data);
-                console.log(`[${serverName}] Data recibida de ${socket.remoteAddress}:`);
-                console.log(`  HEX: ${data.toString('hex')}`);
-                console.log(`  UTF-8: ${data.toString('utf8').replace(/[\x00-\x1F\x7F-\x9F]/g, '.')}`);
-                return;
-            }
-
             // Para puertos Ruptela (6000 y 6001)
             try {
                 dataBuffer = Buffer.concat([dataBuffer, data]);
@@ -576,7 +504,6 @@ function createTcpServer(port, serverName) {
 const tcpServer1 = createTcpServer(TCP_PORT, 'TCP-6000-Ruptela-Pro5');
 const tcpServer2 = createTcpServer(TCP_PORT_2, 'TCP-6001-Ruptela-ECO5');
 const tcpServer3 = createTcpServer(TCP_PORT_3, 'TCP-7000-Jimi-LL301');
-const tcpServer4 = createTcpServer(TCP_PORT_4, 'TCP-7001-Bolide');
 
 // Ruta API para obtener estadísticas de dispositivos Jimi
 app.get('/api/jimi/stats', (req, res) => {
@@ -597,16 +524,11 @@ setInterval(() => {
     const connections1 = tcpServer1.connections || 0;
     const connections2 = tcpServer2.connections || 0;
     const connections3 = tcpServer3.connections || 0;
-    const connections4 = tcpServer4.connections || 0;
-    const totalConnections = connections1 + connections2 + connections3 + connections4;
+    const totalConnections = connections1 + connections2 + connections3;
 
     // Solo mostrar si hay conexiones del puerto 7000 (Jimi IoT)
     if (connections3 > 0) {
         console.log(`[STATS] Conexiones TCP - Jimi LL301: ${connections3}, Total: ${totalConnections}`);
-    }
-
-    if (connections4 > 0) {
-        console.log(`[STATS] Conexiones TCP - Bolide: ${connections4}`);
     }
 }, 60000); // Cada minuto
 
@@ -623,19 +545,12 @@ process.on('unhandledRejection', (reason, promise) => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('🔄 Recibida señal SIGTERM, cerrando servidores...');
-
-    if (mqttClient) {
-        console.log('🔌 Cerrando conexión MQTT...');
-        mqttClient.end();
-    }
-
     tcpServer1.close(() => {
         tcpServer2.close(() => {
             tcpServer3.close(() => {
-                tcpServer4.close(() => {
-                    httpServer.close(() => {
-                        process.exit(0);
-                    });
+                httpServer.close(() => {
+                    console.log('✅ Todos los servidores cerrados');
+                    process.exit(0);
                 });
             });
         });
@@ -644,20 +559,12 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
     console.log('🔄 Recibida señal SIGINT, cerrando servidores...');
-
-    if (mqttClient) {
-        console.log('🔌 Cerrando conexión MQTT...');
-        mqttClient.end();
-    }
-
     tcpServer1.close(() => {
         tcpServer2.close(() => {
             tcpServer3.close(() => {
-                tcpServer4.close(() => {
-                    httpServer.close(() => {
-                        console.log('Todos los servidores cerrados');
-                        process.exit(0);
-                    });
+                httpServer.close(() => {
+                    console.log('✅ Todos los servidores cerrados');
+                    process.exit(0);
                 });
             });
         });
