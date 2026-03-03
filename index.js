@@ -19,8 +19,6 @@ const TCP_PORT = 6000;
 const TCP_PORT_2 = 6001; // Ruptela ECO5 Lite
 const TCP_PORT_3 = 7000; // Jimi IoT LL301
 const GETCORS = process.env.CORS;
-
-// Configuración de CORS
 const corsOptions = {
     origin: GETCORS,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -35,15 +33,9 @@ app.use(express.text({ type: 'text/plain' }));
 app.use('/api/admin', router_admin);
 app.use('/api/artemis', router_artemis);
 
-// Crear servidor HTTP
 const httpServer = http.createServer(app);
-
-// Crear WebSocket Server
 const wss = new WebSocketServer({ server: httpServer });
-
-const clients = new Map(); // Map<ws, { authenticated: boolean }>
-
-// Almacén para los últimos datos por IMEI
+const clients = new Map();
 const gpsDataCache = new Map();
 
 app.use('/alarm', express.raw({ type: "multipart/form-data", limit: "1mb" }));
@@ -78,7 +70,6 @@ app.post('/alarm', async (request, response) => {
     response.status(200).json({ msg: 'alert_received', channelName });
 });
 
-// Ruta para recibir los eventos
 app.post('/eventRcv', (req, res) => {
     try {
         const event = req.body?.params?.events?.[0];
@@ -87,7 +78,6 @@ app.post('/eventRcv', (req, res) => {
             return res.status(400).send('Evento inválido');
         }
 
-        // Emitir a los clientes WebSocket autenticados
         for (const [client, info] of clients.entries()) {
             if (client.readyState === 1 && info.authenticated) {
                 client.send(JSON.stringify({
@@ -534,22 +524,22 @@ setInterval(() => {
 
 // Manejo de errores globales
 process.on('uncaughtException', (err) => {
-    console.error('❌ Excepción no capturada:', err.message);
+    console.error('Excepción no capturada:', err.message);
     console.error('Stack:', err.stack);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('❌ Promesa rechazada sin manejar:', reason);
+    console.error('Promesa rechazada sin manejar:', reason);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-    console.log('🔄 Recibida señal SIGTERM, cerrando servidores...');
+    console.log('Recibida señal SIGTERM, cerrando servidores...');
     tcpServer1.close(() => {
         tcpServer2.close(() => {
             tcpServer3.close(() => {
                 httpServer.close(() => {
-                    console.log('✅ Todos los servidores cerrados');
+                    console.log('Todos los servidores cerrados');
                     process.exit(0);
                 });
             });
@@ -558,12 +548,12 @@ process.on('SIGTERM', () => {
 });
 
 process.on('SIGINT', () => {
-    console.log('🔄 Recibida señal SIGINT, cerrando servidores...');
+    console.log('Recibida señal SIGINT, cerrando servidores...');
     tcpServer1.close(() => {
         tcpServer2.close(() => {
             tcpServer3.close(() => {
                 httpServer.close(() => {
-                    console.log('✅ Todos los servidores cerrados');
+                    console.log('Todos los servidores cerrados');
                     process.exit(0);
                 });
             });
