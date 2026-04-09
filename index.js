@@ -194,9 +194,6 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
         // Para paquetes de records
         if (!decodedData?.imei || !decodedData?.records?.length) {
             if (socket && decodedData?.commandId) {
-                if (decodedData.imei == '860369051538070') {
-                    console.log('Decoded data: ', decodedData);
-                }
                 handlePacketResponse(socket, decodedData, false);
             }
             return;
@@ -204,6 +201,10 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
 
         const cleanedData = cleanAndFilterGpsData(decodedData);
         processingSuccess = cleanedData.records.length > 0;
+
+        if (cleanedData.imei === '860369051538070') {
+            console.log(`[DEBUG - ${cleanedData.imei}] Data procesada:`, JSON.stringify(cleanedData, null, 2));
+        }
 
         // Enviar ACK inmediatamente después de procesar
         if (socket && decodedData.commandId) {
