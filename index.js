@@ -51,7 +51,7 @@ app.post('/alarm', async (request, response) => {
     }
 
     console.log(`Emitiendo 'panic-button' para el canal: ${channelName}`);
-    
+
     for (const [client, info] of clients.entries()) {
         if (client.readyState === 1 && info.authenticated) {
             try {
@@ -194,6 +194,9 @@ function processAndEmitGpsData(decodedData, port = null, socket = null) {
         // Para paquetes de records
         if (!decodedData?.imei || !decodedData?.records?.length) {
             if (socket && decodedData?.commandId) {
+                if (decodedData.imei == '860369051538070') {
+                    console.log('Decoded data: ', decodedData);
+                }
                 handlePacketResponse(socket, decodedData, false);
             }
             return;
